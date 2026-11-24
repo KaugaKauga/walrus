@@ -1,0 +1,31 @@
+# Postgres for tests, benchmarks and manual runs: `docker compose up -d`
+services:
+  postgres:
+    image: postgres:17
+    ports:
+      - "54329:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=64
+      - -c
+      - max_wal_senders=64
+      - -c
+      - max_connections=300
+      - -c
+      - max_slot_wal_keep_size=2GB
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
