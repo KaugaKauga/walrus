@@ -79,7 +79,8 @@ pub async fn check_server(client: &Client, catchup_connections: usize) -> Result
 /// - every key column's type (by `format_type` without typmod) is in `KEY_TYPES`, and text
 ///   keys use a deterministic collation;
 /// - columns: `attnum > 0`, not dropped, not generated, in `attnum` order, with
-///   `format_type(atttypid, atttypmod)` and the type oid; `key` = key columns in index order.
+///   `format_type(atttypid, atttypmod)` and the type oid; `key` = indexes of the key columns,
+///   ascending (column order, see `TableSchema::key`).
 pub async fn read_schemas(client: &Client, names: &[String]) -> Result<Vec<TableSchema>> {
     let _ = (client, names);
     todo!()

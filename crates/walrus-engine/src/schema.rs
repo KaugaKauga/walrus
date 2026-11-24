@@ -22,7 +22,9 @@ pub struct TableSchema {
     pub name: String,
     /// Published columns in `attnum` order: not dropped, not generated.
     pub columns: Vec<ColumnSchema>,
-    /// Indexes into `columns` of the primary-key columns, in key order.
+    /// Indexes into `columns` of the primary-key columns, ascending (column order, not the
+    /// constraint's order): the protocol identifies key columns only by `pk: true`, so keys are
+    /// always the key columns' values in column order, everywhere.
     pub key: Vec<usize>,
 }
 
