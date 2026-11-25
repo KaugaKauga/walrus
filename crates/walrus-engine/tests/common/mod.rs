@@ -410,8 +410,27 @@ pub async fn random_writes(client: &Client, seed: u64, txns: usize) {
             sql.push_str(&random_statement(&mut rng));
         }
         sql.push_str("COMMIT;");
-        client.batch_execute(&sql).await.expect("random write");
+        execute_retrying(client, &sql).await;
     }
+}
+
+/// Concurrent random writers touch rows in different orders, so Postgres sometimes aborts one
+/// as a deadlock; like an application, roll back and retry it.
+async fn execute_retrying(client: &Client, sql: &str) {
+    use tokio_postgres::error::SqlState;
+    for _ in 0..20 {
+        match client.batch_execute(sql).await {
+            Ok(()) => return,
+            Err(e)
+                if e.code() == Some(&SqlState::T_R_DEADLOCK_DETECTED)
+                    || e.code() == Some(&SqlState::T_R_SERIALIZATION_FAILURE) =>
+            {
+                client.batch_execute("ROLLBACK").await.expect("rollback");
+            }
+            Err(e) => panic!("random write: {e}"),
+        }
+    }
+    panic!("random write kept deadlocking");
 }
 
 fn random_statement(rng: &mut impl rand::Rng) -> String {
