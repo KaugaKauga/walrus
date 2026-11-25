@@ -1,0 +1,32 @@
+{
+  "commit": "194b652",
+  "date": "2026-11-25",
+  "dirty": false,
+  "hardware": "Apple M4 Max, 16 logical CPUs, 64 GiB RAM (macOS)",
+  "metrics": {
+    "b1_missed_updates": 0.0,
+    "b1_p50_ms": 2.864,
+    "b1_p99_ms": 6.461,
+    "b2_changes_per_s": 21193.333333333332,
+    "b2_drain_s": 1.580996833,
+    "b2_max_lag_mib": 41.895294189453125,
+    "b2_store_commit_ms": 0.07473071906732855,
+    "b3_delta_bytes": 18452.0,
+    "b3_delta_ms": 2.000916,
+    "b3_delta_pg_ms": 0.458417,
+    "b3_delta_rows_read": 80.0,
+    "b3_full_bytes": 21683660.0,
+    "b3_full_ms": 81.039833,
+    "b3_full_pg_ms": 65.659417,
+    "b3_none_ms": 0.354542,
+    "b3_none_pg_calls": 0.0
+  },
+  "postgres": "17.11 (Debian 17.11-1.pgdg13+2)",
+  "profile": "release",
+  "scenarios": [
+    "b1",
+    "b2",
+    "b3"
+  ],
+  "timestamp": 1795602665
+}

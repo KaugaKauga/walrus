@@ -1,24 +1,24 @@
 {
-  "commit": "2b81a4b",
+  "commit": "194b652",
   "date": "2026-11-25",
   "dirty": false,
   "hardware": "Apple M4 Max, 16 logical CPUs, 64 GiB RAM (macOS)",
   "metrics": {
     "b1_missed_updates": 0.0,
-    "b1_p50_ms": 2.266,
-    "b1_p99_ms": 9.084,
-    "b2_changes_per_s": 22628.5,
-    "b2_drain_s": 0.168698791,
-    "b2_max_lag_mib": 40.0489501953125,
-    "b2_store_commit_ms": 0.09243700600089017,
+    "b1_p50_ms": 2.864,
+    "b1_p99_ms": 6.461,
+    "b2_changes_per_s": 21193.333333333332,
+    "b2_drain_s": 1.580996833,
+    "b2_max_lag_mib": 41.895294189453125,
+    "b2_store_commit_ms": 0.07473071906732855,
     "b3_delta_bytes": 18452.0,
-    "b3_delta_ms": 2.5175829999999997,
-    "b3_delta_pg_ms": 0.693541,
+    "b3_delta_ms": 2.000916,
+    "b3_delta_pg_ms": 0.458417,
     "b3_delta_rows_read": 80.0,
     "b3_full_bytes": 21683660.0,
-    "b3_full_ms": 88.086292,
-    "b3_full_pg_ms": 69.9825,
-    "b3_none_ms": 0.36804200000000004,
+    "b3_full_ms": 81.039833,
+    "b3_full_pg_ms": 65.659417,
+    "b3_none_ms": 0.354542,
     "b3_none_pg_calls": 0.0
   },
   "postgres": "17.11 (Debian 17.11-1.pgdg13+2)",
@@ -28,5 +28,5 @@
     "b2",
     "b3"
   ],
-  "timestamp": 1795600258
+  "timestamp": 1795602665
 }
