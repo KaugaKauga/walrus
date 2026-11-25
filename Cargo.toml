@@ -11,6 +11,7 @@ publish = false
 [workspace.dependencies]
 walrus-protocol = { path = "crates/walrus-protocol" }
 walrus-client = { path = "crates/walrus-client" }
+walrus-engine = { path = "crates/walrus-engine" }
 anyhow = "1"
 axum = "0.8"
 bytes = "1"
