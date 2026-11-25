@@ -16,6 +16,7 @@ use crate::change_index::{IndexReader, Lookup};
 use crate::encode::{EncodedTxn, Item, commit_frame, encode_items, rows_frames, table_reset_frame};
 use crate::metrics::Metrics;
 use crate::pg::read;
+use crate::pg::xid::RecentXids;
 use crate::pg::xid::Snapshot;
 use crate::schema::{Key, TableId, TableSchema};
 
@@ -40,6 +41,8 @@ pub struct Shared {
     pub metrics: Arc<Metrics>,
     pub ready: watch::Receiver<bool>,
     pub shutdown: watch::Receiver<bool>,
+    /// Transactions applied by the writer, for the snapshot check (PLAN.md §7.2).
+    pub recent_xids: Arc<RecentXids>,
 }
 
 /// A validated `/v1/stream` request.
@@ -346,7 +349,7 @@ async fn run(shared: &Shared, request: &Request, out: &Out) -> Result<(), Stop> 
         } else {
             Metrics::inc(&metrics.catchups_delta);
         }
-        let snapshot = catch_up(shared, out, &modes).await?;
+        let snapshot = catch_up(shared, out, &modes, p0).await?;
         send(out, commit_frame(shared.epoch, p0)).await?;
         let tables = modes
             .into_iter()
@@ -451,14 +454,19 @@ async fn send_whole(out: &Out, request: &Request, txn: &EncodedTxn) -> Result<()
 
 /// Read what the client is missing from one Postgres snapshot and send it; returns the
 /// snapshot S for the join. Waits for a pooled connection (admission control).
-async fn catch_up(shared: &Shared, out: &Out, modes: &[(TableId, Mode)]) -> Result<Snapshot, Stop> {
+async fn catch_up(
+    shared: &Shared,
+    out: &Out,
+    modes: &[(TableId, Mode)],
+    p0: u64,
+) -> Result<Snapshot, Stop> {
     let mut shutdown = shared.shutdown.clone();
     let mut conn = tokio::select! {
         c = shared.pool.get() => c.map_err(|e| anyhow!(e)).context("getting a catch-up connection")?,
         _ = shutdown_requested(&mut shutdown) => return Err(Stop::Close("shutdown")),
     };
     let result = tokio::select! {
-        r = tokio::time::timeout(CATCHUP_TIME_LIMIT, read_all(shared, out, &mut conn, modes)) => {
+        r = tokio::time::timeout(CATCHUP_TIME_LIMIT, read_all(shared, out, &mut conn, modes, p0)) => {
             r.unwrap_or(Err(Stop::Close("catch-up time limit")))
         }
         _ = shutdown_requested(&mut shutdown) => Err(Stop::Close("shutdown")),
@@ -475,6 +483,7 @@ async fn read_all(
     out: &Out,
     conn: &mut Object,
     modes: &[(TableId, Mode)],
+    p0: u64,
 ) -> Result<Snapshot, Stop> {
     let metrics = &shared.metrics;
     for attempt in 0..SNAPSHOT_ATTEMPTS {
@@ -485,15 +494,16 @@ async fn read_all(
             .start()
             .await
             .context("starting the catch-up transaction")?;
-        if let Some(snapshot) = read::take_snapshot(&tx).await? {
+        let snapshot = read::take_snapshot(&tx).await?;
+        if !shared.recent_xids.misses_applied(&snapshot, p0) {
             copy_tables(shared, out, &tx, modes).await?;
             tx.commit()
                 .await
                 .context("ending the catch-up transaction")?;
             return Ok(snapshot);
         }
-        // I8: a transaction in S's in-progress list has already been streamed. Take a later
-        // snapshot once it has left the process array.
+        // I8: the engine already applied (and will never resend) a transaction S can't see yet.
+        // Take a later snapshot once it is visible.
         tx.rollback()
             .await
             .context("rolling back a rejected snapshot")?;

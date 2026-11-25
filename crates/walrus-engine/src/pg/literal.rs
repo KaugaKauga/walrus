@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn owned_strings_work() {
-        let keys = vec!["1".to_string(), "2".to_string()];
+        let keys = ["1".to_string(), "2".to_string()];
         assert_eq!(
             array_literal(keys.iter().map(String::as_str)),
             r#"'{"1","2"}'"#

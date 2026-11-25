@@ -31,34 +31,15 @@ pub fn create_pool(params: &PgParams, size: usize) -> Result<Pool> {
         .context("building the catch-up pool")
 }
 
-/// In a fresh `REPEATABLE READ READ ONLY` transaction, take its snapshot and run the §7.2 check
-/// in the transaction's first statement:
-///
-/// ```sql
-/// SELECT s::text, ARRAY(SELECT x::text FROM pg_snapshot_xip(s) AS x
-///                       WHERE pg_xact_status(x) = 'committed')
-///   FROM pg_current_snapshot() AS s
-/// ```
-///
-/// Returns `None` when the check finds an in-progress xid that is already committed: the
-/// caller must roll back and retry with a new transaction.
-pub async fn take_snapshot(tx: &Transaction<'_>) -> Result<Option<Snapshot>> {
-    // This must be the transaction's first statement: it is what fixes the snapshot (I8).
+/// In a fresh `REPEATABLE READ READ ONLY` transaction, fix and return its snapshot. Must be the
+/// transaction's first statement. Whether the snapshot is usable is the session's check against
+/// the transactions the engine already applied (`RecentXids`, PLAN.md §7.2).
+pub async fn take_snapshot(tx: &Transaction<'_>) -> Result<Snapshot> {
     let row = tx
-        .query_one(
-            "SELECT s::text, ARRAY(SELECT x::text FROM pg_snapshot_xip(s) AS x \
-                                   WHERE pg_xact_status(x) = 'committed') \
-               FROM pg_current_snapshot() AS s",
-            &[],
-        )
+        .query_one("SELECT pg_current_snapshot()::text", &[])
         .await
         .context("taking the catch-up snapshot")?;
-    let text: String = row.get(0);
-    let committed: Vec<String> = row.get(1);
-    if !committed.is_empty() {
-        return Ok(None);
-    }
-    Snapshot::parse(&text).map(Some)
+    Snapshot::parse(row.get(0))
 }
 
 /// `COPY (SELECT <columns> FROM <table>) TO STDOUT`.

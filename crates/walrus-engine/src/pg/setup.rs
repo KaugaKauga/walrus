@@ -310,6 +310,18 @@ async fn read_schema(client: &Client, name: &str) -> Result<TableSchema> {
     })
 }
 
+/// A freshly assigned 64-bit xid (`pg_current_xact_id()`): every xid the engine applied before
+/// this start is below it, so it is the reference for widening streamed 32-bit xids.
+pub async fn current_xid(client: &Client) -> Result<u64> {
+    let row = client
+        .query_one("SELECT pg_current_xact_id()::text", &[])
+        .await
+        .context("reading the current transaction id")?;
+    let text: &str = row.get(0);
+    text.parse()
+        .with_context(|| format!("unexpected transaction id {text:?}"))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SlotState {
     Missing,

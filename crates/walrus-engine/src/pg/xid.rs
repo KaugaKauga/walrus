@@ -58,6 +58,88 @@ pub fn precedes(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) < 0
 }
 
+impl Snapshot {
+    /// Exact visibility of a full 64-bit xid (no wraparound ambiguity).
+    pub fn visible64(&self, xid: u64) -> bool {
+        xid < self.xmin || (xid < self.xmax && !self.xip.contains(&xid))
+    }
+}
+
+/// Widen a streamed 32-bit xid to 64 bits: the value with these low 32 bits nearest to
+/// `reference` (a recent 64-bit xid). Valid while the two are less than 2^31 apart, which holds
+/// for xids streamed close together.
+pub fn extend(reference: u64, xid: u32) -> u64 {
+    let candidate = (reference & !0xffff_ffff) | u64::from(xid);
+    if candidate > reference.saturating_add(1 << 31) {
+        candidate.saturating_sub(1 << 32)
+    } else if candidate.saturating_add(1 << 31) < reference {
+        candidate + (1 << 32)
+    } else {
+        candidate
+    }
+}
+
+/// Transactions the engine has applied that a catch-up snapshot might not see yet
+/// (PLAN.md §7.2, I8).
+///
+/// Postgres can stream a commit before the transaction leaves the process array, i.e. before it
+/// is visible to new snapshots, and with synchronous replication that gap lasts a standby round
+/// trip or longer. Postgres can't tell a session about such a transaction: it isn't in the
+/// snapshot's in-progress list when its xid is at or above `xmax`, and `pg_xact_status` reports
+/// it as in progress. Only the engine knows it has already streamed it, so the engine keeps the
+/// xids it applied and a session rejects a snapshot that misses one of them.
+pub struct RecentXids {
+    /// `(xid, commit LSN)` in commit order.
+    entries: std::sync::Mutex<std::collections::VecDeque<(u64, u64)>>,
+}
+
+/// Entries kept at most. Pruning by snapshot `xmin` normally keeps the list tiny; the cap only
+/// bounds memory when no catch-ups run for a long time.
+pub const RECENT_XIDS_CAP: usize = 1 << 18;
+
+impl Default for RecentXids {
+    fn default() -> Self {
+        RecentXids {
+            entries: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        }
+    }
+}
+
+impl RecentXids {
+    /// Record an applied transaction. The writer calls this before the index commit that
+    /// covers `lsn`, so a session that reads `P0 >= lsn` always finds the entry.
+    pub fn push(&self, xid: u64, lsn: u64) {
+        let mut entries = self.lock();
+        if entries.len() >= RECENT_XIDS_CAP {
+            entries.pop_front();
+        }
+        entries.push_back((xid, lsn));
+    }
+
+    /// Whether some transaction with commit LSN `<= p0` is not visible in `snapshot`: a catch-up
+    /// on that snapshot would miss it (it is neither in the snapshot nor after `P0` on the live
+    /// stream), so the session must take a later snapshot.
+    ///
+    /// Otherwise forget every transaction below the snapshot's `xmin`: it has finished, so it is
+    /// visible to every later snapshot.
+    pub fn misses_applied(&self, snapshot: &Snapshot, p0: u64) -> bool {
+        let mut entries = self.lock();
+        if entries
+            .iter()
+            .any(|&(xid, lsn)| lsn <= p0 && !snapshot.visible64(xid))
+        {
+            return true;
+        }
+        entries.retain(|&(xid, _)| xid >= snapshot.xmin);
+        false
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::VecDeque<(u64, u64)>> {
+        // A panic while holding this lock leaves the list intact (push/retain are atomic).
+        self.entries.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -187,5 +269,70 @@ mod tests {
         assert!(!precedes(3, 2));
         assert!(precedes(u32::MAX, 0));
         assert!(!precedes(0, u32::MAX));
+    }
+}
+
+#[cfg(test)]
+mod recent_tests {
+    use super::*;
+
+    fn snap(xmin: u64, xmax: u64, xip: &[u64]) -> Snapshot {
+        Snapshot {
+            xmin,
+            xmax,
+            xip: xip.to_vec(),
+        }
+    }
+
+    #[test]
+    fn extend_picks_the_nearest_epoch() {
+        let base = (5u64 << 32) | 100;
+        assert_eq!(extend(base, 150), (5 << 32) | 150);
+        assert_eq!(extend(base, 50), (5 << 32) | 50);
+        // Low bits wrapped past the reference: next epoch.
+        let near_end = (5u64 << 32) | 0xffff_fff0;
+        assert_eq!(extend(near_end, 5), (6 << 32) | 5);
+        // Reference just past a wrap, xid just before it: previous epoch.
+        let after_wrap = (6u64 << 32) | 3;
+        assert_eq!(extend(after_wrap, 0xffff_fffe), (5 << 32) | 0xffff_fffe);
+    }
+
+    #[test]
+    fn visible64_is_exact() {
+        let s = snap(100, 110, &[103, 105]);
+        assert!(s.visible64(99));
+        assert!(s.visible64(104));
+        assert!(!s.visible64(103));
+        assert!(
+            !s.visible64(110),
+            "xid >= xmax is not visible, even if it started earlier"
+        );
+    }
+
+    #[test]
+    fn rejects_a_snapshot_missing_an_applied_commit() {
+        let recent = RecentXids::default();
+        recent.push(100, 10);
+        recent.push(101, 20); // streamed, but still running when the snapshot is taken
+        // The case Postgres can't report: xid == xmax, so not in the in-progress list.
+        assert!(recent.misses_applied(&snap(101, 101, &[]), 20));
+        // A catch-up at P0 = 10 doesn't need txn 101 (it arrives on the live stream).
+        assert!(!recent.misses_applied(&snap(101, 101, &[]), 10));
+        // Later, it is visible.
+        assert!(!recent.misses_applied(&snap(102, 102, &[]), 20));
+    }
+
+    #[test]
+    fn prunes_below_xmin_and_caps() {
+        let recent = RecentXids::default();
+        for x in 0..10 {
+            recent.push(x, x);
+        }
+        assert!(!recent.misses_applied(&snap(7, 12, &[]), 9));
+        assert_eq!(recent.lock().len(), 3);
+        for x in 0..(RECENT_XIDS_CAP as u64 + 5) {
+            recent.push(100 + x, 100 + x);
+        }
+        assert_eq!(recent.lock().len(), RECENT_XIDS_CAP);
     }
 }

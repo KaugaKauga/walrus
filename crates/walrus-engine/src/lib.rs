@@ -73,6 +73,7 @@ pub async fn start(config: Config, listener: TcpListener) -> Result<Engine> {
         Some(store) => store,
         None => setup::new_epoch(&params, &client, &config, &tables).await?,
     };
+    let xid_reference = setup::current_xid(&client).await?;
     drop(client);
     tracing::info!(
         epoch = format!("{:016x}", meta.epoch),
@@ -82,6 +83,7 @@ pub async fn start(config: Config, listener: TcpListener) -> Result<Engine> {
 
     let tables = Arc::new(meta.tables.clone());
     let metrics = Arc::new(Metrics::default());
+    let recent_xids = Arc::new(pg::xid::RecentXids::default());
     let (events_tx, events_rx) = mpsc::channel(EVENT_QUEUE);
     let (acks_tx, acks_rx) = watch::channel(0u64);
     let (live_tx, _) = broadcast::channel(LIVE_RING);
@@ -99,6 +101,8 @@ pub async fn start(config: Config, listener: TcpListener) -> Result<Engine> {
             acks: acks_tx,
             retention: config.retention,
             metrics: metrics.clone(),
+            recent_xids: recent_xids.clone(),
+            xid_reference,
         };
         move || writer::run(ctx)
     });
@@ -124,6 +128,7 @@ pub async fn start(config: Config, listener: TcpListener) -> Result<Engine> {
         metrics: metrics.clone(),
         ready: ready_rx.clone(),
         shutdown: shutdown_rx,
+        recent_xids,
     });
     let addr = listener.local_addr()?;
     let http = tokio::spawn(http::serve(listener, shared.clone()));

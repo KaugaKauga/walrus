@@ -158,7 +158,8 @@ fn read_meta(conn: &Connection) -> Result<Meta> {
         floors.push(from_i64(floor)?);
     }
     Ok(Meta {
-        epoch: from_i64(epoch)?,
+        // The epoch is an opaque 64-bit id: stored as the same bits in a signed integer.
+        epoch: epoch as u64,
         last_lsn: from_i64(last_lsn)?,
         tables,
         floors,
@@ -197,7 +198,7 @@ pub fn create(
     tx.execute_batch(SCHEMA_SQL)?;
     {
         let mut put = tx.prepare("INSERT INTO meta (key, value) VALUES (?1, ?2)")?;
-        put.execute(params!["epoch", to_i64(epoch)?])?;
+        put.execute(params!["epoch", epoch as i64])?;
         put.execute(params!["last_lsn", floor])?;
         put.execute(params!["format_version", i64::from(FORMAT_VERSION)])?;
         put.execute(params!["initialized", 1_i64])?;
@@ -539,6 +540,11 @@ mod tests {
         drop(w);
         let (_w, r, meta) = create(&sub, 8, &[table("public.c")], 5).unwrap();
         assert_eq!(meta.epoch, 8);
+        let (_, _, meta) =
+            create(dir.path(), u64::MAX - 1, &[table("public.c")], 3).expect("create");
+        assert_eq!(meta.epoch, u64::MAX - 1, "epochs use all 64 bits");
+        let (_, _, meta) = open(dir.path()).expect("open").expect("initialized");
+        assert_eq!(meta.epoch, u64::MAX - 1);
         assert_eq!(r.entry_counts().unwrap(), vec![0]);
     }
 

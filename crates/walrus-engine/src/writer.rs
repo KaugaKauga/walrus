@@ -12,6 +12,7 @@ use crate::change_index::{Batch, IndexWriter};
 use crate::encode::{EncodedTxn, TxnBuilder};
 use crate::metrics::Metrics;
 use crate::pg::decode::Change;
+use crate::pg::xid::RecentXids;
 use crate::schema::TableSchema;
 
 /// Max transactions per store commit (PLAN.md §5.3).
@@ -48,6 +49,10 @@ pub struct WriterCtx {
     pub acks: watch::Sender<u64>,
     pub retention: Duration,
     pub metrics: Arc<Metrics>,
+    /// Every applied transaction's xid, for the catch-up snapshot check (PLAN.md §7.2).
+    pub recent_xids: Arc<RecentXids>,
+    /// A 64-bit xid assigned at startup: the reference for widening streamed 32-bit xids.
+    pub xid_reference: u64,
 }
 
 /// Blocking loop; run it with `tokio::task::spawn_blocking`. Returns Ok when `events` is closed
@@ -77,6 +82,7 @@ pub struct WriterCtx {
 /// middle of one: the inner loop keeps blocking for events until it reaches a commit boundary.
 pub fn run(mut ctx: WriterCtx) -> Result<()> {
     let mut last_lsn = ctx.last_lsn;
+    let mut xid_reference = ctx.xid_reference;
     let mut next_clock = Instant::now() + CLOCK_INTERVAL;
     // A previous GC slice deleted a full slice: more is waiting, so run another after the
     // next batch instead of waiting a whole interval.
@@ -103,6 +109,12 @@ pub fn run(mut ctx: WriterCtx) -> Result<()> {
                     let skip = commit_lsn <= last_lsn;
                     if skip {
                         Metrics::inc(&ctx.metrics.txns_skipped);
+                    } else {
+                        // I8: recorded before the index commit that covers it, so a session
+                        // that reads P0 >= commit_lsn always checks its snapshot against it.
+                        let xid64 = crate::pg::xid::extend(xid_reference, xid);
+                        xid_reference = xid_reference.max(xid64);
+                        ctx.recent_xids.push(xid64, commit_lsn);
                     }
                     open = Some(OpenTxn {
                         commit_lsn,

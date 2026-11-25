@@ -131,10 +131,7 @@ async fn snapshot_full_and_delta_reads() {
         .start()
         .await
         .expect("begin");
-    let snapshot = read::take_snapshot(&tx)
-        .await
-        .expect("snapshot query")
-        .expect("no streamed-but-invisible commits in a quiet database");
+    let snapshot = read::take_snapshot(&tx).await.expect("snapshot query");
     assert!(snapshot.xmin <= snapshot.xmax);
 
     let all = collect(&tx, &read::full_query(&todos), 2).await;
