@@ -16,7 +16,6 @@ pub const ROWS_PER_EVENT: usize = 1000;
 /// Above this many encoded bytes a transaction is published as oversized (PLAN.md §5.3).
 pub const MAX_TXN_BYTES: usize = 8 << 20;
 
-/// One item of a table's part of a transaction, in commit order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
     /// The table was truncated: `table-reset` with no rows.
@@ -24,12 +23,10 @@ pub enum Item {
     Op(Op),
 }
 
-/// A transaction's items and frames for one table it touched.
 #[derive(Clone, Debug)]
 pub struct TxnTable {
     pub table: TableId,
     pub items: Vec<Item>,
-    /// `encode_items(table, &items)`.
     pub frames: Bytes,
 }
 
@@ -42,9 +39,7 @@ pub struct EncodedTxn {
     /// Too big to fan out (encoded size above `MAX_TXN_BYTES`): `tables` lists the touched
     /// tables with empty items/frames; sessions subscribed to any of them close (§5.3).
     pub oversized: bool,
-    /// Only tables the transaction touched, in first-touch order.
     pub tables: Vec<TxnTable>,
-    /// `commit_frame(epoch, lsn)`.
     pub commit_frame: Bytes,
 }
 
@@ -54,8 +49,6 @@ impl EncodedTxn {
     }
 }
 
-/// Builds one `EncodedTxn` from its changes, in order.
-///
 /// Change → items for the touched table (PLAN.md §4.8):
 /// - Insert → `Upsert(row)`.
 /// - Update, key unchanged → `Upsert(row)`, or `Patch { row, keep: unchanged, from: None }` if
@@ -142,7 +135,6 @@ impl TxnBuilder {
     }
 }
 
-/// The table items one change produces, in order (pure; see `TxnBuilder`).
 fn change_items(change: &Change) -> Vec<(TableId, Item)> {
     match change {
         Change::Insert { table, row } => vec![(*table, Item::Op(Op::Upsert(row.clone())))],
@@ -256,7 +248,6 @@ fn frame(event: &str, id: Option<&str>, data: &impl Serialize) -> Bytes {
     Bytes::from(sse_event(event, id, &json))
 }
 
-/// The key an op targets: the row's key for `Upsert`/`Patch`, the key for `Delete`.
 pub fn op_key(table: &TableSchema, op: &Op) -> Key {
     match op {
         Op::Upsert(row) | Op::Patch { row, .. } => table

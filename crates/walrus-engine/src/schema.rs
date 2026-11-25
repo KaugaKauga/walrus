@@ -56,7 +56,6 @@ impl TableSchema {
             .join(", ")
     }
 
-    /// Protocol description of the columns (for `table-reset`).
     pub fn column_info(&self) -> Vec<walrus_protocol::ColumnInfo> {
         self.columns
             .iter()
@@ -70,7 +69,6 @@ impl TableSchema {
     }
 }
 
-/// Quote an SQL identifier: wrap in `"` and double embedded `"`.
 pub fn quote_ident(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
 }

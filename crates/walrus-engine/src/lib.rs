@@ -24,12 +24,9 @@ use crate::pg::setup::{self, PgParams, SlotState};
 use crate::pg::{read, replication};
 use crate::session::{LIVE_RING, Shared};
 
-/// Replication → writer queue (events).
 const EVENT_QUEUE: usize = 4096;
 
-/// A running engine.
 pub struct Engine {
-    /// The HTTP address actually bound.
     pub addr: SocketAddr,
     pub epoch: u64,
     pub metrics: Arc<Metrics>,
@@ -154,7 +151,6 @@ impl Engine {
         }
     }
 
-    /// Run until a component fails or ctrl-c, then shut down.
     pub async fn run_until_stopped(mut self) -> Result<()> {
         let failure = tokio::select! {
             _ = tokio::signal::ctrl_c() => None,

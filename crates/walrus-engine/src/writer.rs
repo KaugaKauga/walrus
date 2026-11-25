@@ -22,7 +22,6 @@ pub const CLOCK_INTERVAL: Duration = Duration::from_secs(60);
 /// Index entries deleted per retention slice.
 pub const GC_SLICE: usize = 10_000;
 
-/// What the replication task sends the writer, in stream order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WalEvent {
     /// `commit_lsn` is the transaction's commit LSN (`Begin.final_lsn` = `Commit.lsn`).
@@ -57,29 +56,8 @@ pub struct WriterCtx {
 
 /// Blocking loop; run it with `tokio::task::spawn_blocking`. Returns Ok when `events` is closed
 /// (after committing what it has), Err on store failures or protocol violations (a change
-/// outside Begin/Commit, mismatched commit LSN).
-///
-/// ```text
-/// loop:
-///   wait for the next event (blocking_recv); None → finish
-///   open a store batch
-///   repeat:
-///     Begin: skip the whole transaction if commit_lsn <= last_lsn (I3, metrics.txns_skipped);
-///            else start a TxnBuilder
-///     Change: index it (record each affected key → commit_lsn: insert/update new key, old key on
-///             key change, delete key; truncate → Batch::truncate per table), push to builder
-///     Commit: last_lsn = commit_lsn; finish the builder; keep (EncodedTxn, end_lsn)
-///     take the next event with try_recv; stop at a commit boundary when the channel is empty
-///     or MAX_BATCH_TXNS transactions are in the batch
-///   commit(last_lsn)                                        -- I1, I2 (fsync)
-///   acks.send(end_lsn of the last committed transaction)
-///   publish each EncodedTxn in order: live.send(Arc::new(txn)) (no receivers is fine)  -- I4
-///   metrics: applied_lsn, txns_applied, changes_applied, index_commits
-///   every CLOCK_INTERVAL: record_clock(now, last_lsn); gc_slice(now - retention, GC_SLICE)
-/// ```
-///
-/// A transaction may span batches only in the sense that a batch is never committed in the
-/// middle of one: the inner loop keeps blocking for events until it reaches a commit boundary.
+/// outside Begin/Commit, mismatched commit LSN). Group commit (PLAN.md §5.3):
+/// a batch is never committed in the middle of a transaction.
 pub fn run(mut ctx: WriterCtx) -> Result<()> {
     let mut last_lsn = ctx.last_lsn;
     let mut xid_reference = ctx.xid_reference;
@@ -235,7 +213,6 @@ pub fn run(mut ctx: WriterCtx) -> Result<()> {
     Ok(())
 }
 
-/// The transaction between Begin and Commit.
 struct OpenTxn {
     commit_lsn: u64,
     /// `None` when the transaction is a replay we skip (I3).
