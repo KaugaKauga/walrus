@@ -10,6 +10,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::serve::ListenerExt;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -41,6 +42,14 @@ pub async fn serve(listener: TcpListener, shared: Arc<Shared>) -> Result<()> {
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
         .with_state(shared);
+    // TCP_NODELAY: a live event is a few small writes (chunk header, frame, chunk end); with
+    // Nagle's algorithm the later ones can wait for the peer's delayed ACK, adding latency to
+    // every commit → client delivery (PLAN.md §10.1 target).
+    let listener = listener.tap_io(|tcp| {
+        if let Err(e) = tcp.set_nodelay(true) {
+            tracing::debug!(error = %e, "could not set TCP_NODELAY");
+        }
+    });
     // Sessions also end on shutdown, so the open streams do not hold the server up.
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

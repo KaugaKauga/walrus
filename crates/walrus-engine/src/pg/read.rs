@@ -6,6 +6,7 @@ use deadpool_postgres::{ManagerConfig, Pool, RecyclingMethod, Transaction};
 use futures_util::StreamExt;
 use tokio_postgres::NoTls;
 
+use crate::encode::ROWS_PER_EVENT;
 use crate::pg::copy_text::CopyParser;
 use crate::pg::literal;
 use crate::pg::setup::PgParams;
@@ -106,16 +107,26 @@ where
     let mut stream = std::pin::pin!(stream);
     let mut parser = CopyParser::new(ncols);
     let mut total = 0u64;
+    // Postgres sends one COPY message per row: collect a full event's worth before handing rows
+    // on, so a catch-up becomes `rows` events of ROWS_PER_EVENT rows, not one event per row.
+    let mut rows = Vec::with_capacity(ROWS_PER_EVENT);
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow!(e)).context("reading COPY data")?;
-        let mut rows = Vec::new();
         parser.feed(&chunk, &mut rows)?;
-        if !rows.is_empty() {
+        if rows.len() >= ROWS_PER_EVENT {
             total += rows.len() as u64;
-            on_rows(rows).await?;
+            on_rows(std::mem::replace(
+                &mut rows,
+                Vec::with_capacity(ROWS_PER_EVENT),
+            ))
+            .await?;
         }
     }
     parser.finish()?;
+    if !rows.is_empty() {
+        total += rows.len() as u64;
+        on_rows(rows).await?;
+    }
     Ok(total)
 }
 

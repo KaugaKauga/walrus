@@ -371,6 +371,9 @@ async fn run(shared: &Shared, request: &Request, out: &Out) -> Result<(), Stop> 
     };
 
     let mut shutdown = shared.shutdown.clone();
+    // Keepalives are due after KEEPALIVE without sending this client anything; transactions it
+    // isn't subscribed to don't count.
+    let mut keepalive_at = tokio::time::Instant::now() + KEEPALIVE;
     loop {
         let txn = tokio::select! {
             r = rx.recv() => match r {
@@ -384,8 +387,9 @@ async fn run(shared: &Shared, request: &Request, out: &Out) -> Result<(), Stop> 
             },
             _ = shutdown_requested(&mut shutdown) => return Ok(()),
             _ = out.closed() => return Err(Stop::ClientGone),
-            _ = tokio::time::sleep(KEEPALIVE) => {
+            _ = tokio::time::sleep_until(keepalive_at) => {
                 send(out, Bytes::from_static(SSE_KEEPALIVE.as_bytes())).await?;
+                keepalive_at = tokio::time::Instant::now() + KEEPALIVE;
                 continue;
             }
         };
@@ -404,14 +408,14 @@ async fn run(shared: &Shared, request: &Request, out: &Out) -> Result<(), Stop> 
             Some(j) => join_filter(j, &request.tables, &txn, &shared.tables),
             None => JoinDecision::Send,
         };
-        match decision {
+        let sent = match decision {
             JoinDecision::EndJoin => {
                 // Every later transaction began after S too, so none can be visible in it.
                 join = None;
-                send_whole(out, request, &txn).await?;
+                send_whole(out, request, &txn).await?
             }
             JoinDecision::Send => send_whole(out, request, &txn).await?,
-            JoinDecision::Skip => {}
+            JoinDecision::Skip => false,
             JoinDecision::Filtered(parts) => {
                 for part in parts {
                     match part {
@@ -426,17 +430,22 @@ async fn run(shared: &Shared, request: &Request, out: &Out) -> Result<(), Stop> 
                     }
                 }
                 send(out, txn.commit_frame.clone()).await?;
+                true
             }
             JoinDecision::Close(reason) => {
                 Metrics::inc(&metrics.closes_join);
                 return Err(Stop::Close(reason));
             }
+        };
+        if sent {
+            keepalive_at = tokio::time::Instant::now() + KEEPALIVE;
         }
     }
 }
 
 /// Send a transaction's frames for the subscribed tables it touched, then its commit frame.
-async fn send_whole(out: &Out, request: &Request, txn: &EncodedTxn) -> Result<(), ClientGone> {
+/// Returns whether anything was sent.
+async fn send_whole(out: &Out, request: &Request, txn: &EncodedTxn) -> Result<bool, ClientGone> {
     let mut any = false;
     for t in txn
         .tables
@@ -449,7 +458,7 @@ async fn send_whole(out: &Out, request: &Request, txn: &EncodedTxn) -> Result<()
     if any {
         send(out, txn.commit_frame.clone()).await?;
     }
-    Ok(())
+    Ok(any)
 }
 
 /// Read what the client is missing from one Postgres snapshot and send it; returns the
