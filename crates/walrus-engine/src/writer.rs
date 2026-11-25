@@ -186,9 +186,15 @@ pub fn run(mut ctx: WriterCtx) -> Result<()> {
             drop(batch);
         } else {
             // I1, I2: `last_lsn` is written in the same store transaction as the entries.
+            // Timed so the benchmark can tell when the store becomes the bottleneck.
+            let commit_started = Instant::now();
             batch
                 .commit(last_lsn)
                 .context("committing the change index")?;
+            Metrics::add(
+                &ctx.metrics.index_commit_micros,
+                commit_started.elapsed().as_micros() as u64,
+            );
             Metrics::inc(&ctx.metrics.index_commits);
             Metrics::add(&ctx.metrics.txns_applied, done.len() as u64);
             Metrics::add(&ctx.metrics.changes_applied, changes_applied);

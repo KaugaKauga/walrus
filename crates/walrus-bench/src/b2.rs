@@ -11,6 +11,7 @@ use tokio_postgres::Client;
 use walrus_engine::metrics::Metrics;
 
 use crate::env::{ms, percentile, table, with_engine};
+use crate::guard::Outcome;
 use crate::sse::Sse;
 
 const WRITERS: usize = 8;
@@ -30,7 +31,7 @@ struct Seen {
     reconnects: AtomicU64,
 }
 
-pub async fn run() -> Result<String> {
+pub async fn run() -> Result<Outcome> {
     with_engine(SETUP, &["public.bench_w"], async |env, engine| {
         let m = &engine.metrics;
         let seen = Arc::new(Seen::default());
@@ -164,7 +165,17 @@ pub async fn run() -> Result<String> {
                 ],
             ],
         );
-        Ok(format!(
+        let metrics = vec![
+            ("b2_changes_per_s", in_window.changes as f64 / secs),
+            ("b2_drain_s", engine_drain.as_secs_f64()),
+            ("b2_max_lag_mib", max(&lag_pg) as f64 / 1_048_576.0),
+            // Mean store commit time inside the window; early warning for the store.
+            (
+                "b2_store_commit_ms",
+                in_window.commit_micros as f64 / in_window.commits.max(1) as f64 / 1000.0,
+            ),
+        ];
+        let section = format!(
             "## B2: sustained write throughput\n\n\
              Table `bench_w (id bigint pk, v bigint, payload text)`, initially empty. {WRITERS} \
              writer connections run autocommit single-row `INSERT ... ON CONFLICT DO UPDATE` over \
@@ -175,7 +186,8 @@ pub async fn run() -> Result<String> {
              Lag per second while writing, KiB (`pg_current_wal_lsn − applied_lsn`): {}\n",
             series(&lag_metric),
             series(&lag_pg),
-        ))
+        );
+        Ok(Outcome { section, metrics })
     })
     .await
 }
@@ -248,6 +260,7 @@ struct Snapshot {
     txns: u64,
     changes: u64,
     commits: u64,
+    commit_micros: u64,
     lagged: u64,
 }
 
@@ -257,6 +270,7 @@ impl Snapshot {
             txns: Metrics::get(&m.txns_applied),
             changes: Metrics::get(&m.changes_applied),
             commits: Metrics::get(&m.index_commits),
+            commit_micros: Metrics::get(&m.index_commit_micros),
             lagged: Metrics::get(&m.closes_lagged),
         }
     }
@@ -266,6 +280,7 @@ impl Snapshot {
             txns: self.txns - earlier.txns,
             changes: self.changes - earlier.changes,
             commits: self.commits - earlier.commits,
+            commit_micros: self.commit_micros - earlier.commit_micros,
             lagged: self.lagged - earlier.lagged,
         }
     }

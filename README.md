@@ -72,9 +72,16 @@ Endpoints: `/v1/stream`, `/health`, `/ready`, `/metrics` (Prometheus text).
 ## Development
 
 ```sh
-docker compose up -d
-./scripts/check.sh       # fmt, clippy -D warnings, all tests (unit + integration against Postgres)
+scripts/test.sh          # starts Postgres; fmt, clippy -D warnings, all tests (extra args go to cargo test)
+scripts/bench.sh         # release benchmark (b1|b2|b3|all), then compare with bench/baseline.json
 ```
+
+Benchmark guardrail: run `scripts/bench.sh` before and after a change. It writes
+`bench/results/<date>-<commit>.{md,json}`, regenerates `bench/HISTORY.md` (latest vs baseline,
+history, trends) and exits 1 if a tracked metric regressed beyond its tolerance (see
+`crates/walrus-bench/src/guard.rs`). When a change intentionally moves the numbers, run
+`scripts/bench.sh --accept` and commit `bench/baseline.json`, the new result files and
+`bench/HISTORY.md`. Timings are only comparable on the same machine.
 
 Layout:
 

@@ -41,31 +41,62 @@ fn machine() -> String {
     )
 }
 
-pub async fn header() -> String {
-    let version = async {
-        let pg = connect(&format!("{}/postgres", pg_base())).await.ok()?;
-        pg.query_one("SHOW server_version", &[])
-            .await
-            .ok()
-            .map(|r| r.get::<_, String>(0))
+/// True when tracked files differ from HEAD. `bench/` is ignored: a run writes its own
+/// results there, which must not make the next run look dirty.
+pub fn dirty() -> bool {
+    command_output("git", &["status", "--porcelain", "--", ".", ":!bench"])
+        .is_some_and(|out| !out.is_empty())
+}
+
+/// What the report header and the result JSON say about the machine and build.
+pub struct Meta {
+    pub hardware: String,
+    pub postgres: String,
+    pub profile: &'static str,
+}
+
+impl Meta {
+    pub async fn collect() -> Meta {
+        let postgres = async {
+            let pg = connect(&format!("{}/postgres", pg_base())).await.ok()?;
+            pg.query_one("SHOW server_version", &[])
+                .await
+                .ok()
+                .map(|r| r.get::<_, String>(0))
+        }
+        .await
+        .unwrap_or_else(|| "unknown".into());
+        let profile = if cfg!(debug_assertions) {
+            "debug (numbers are not meaningful)"
+        } else {
+            "release"
+        };
+        Meta {
+            hardware: machine(),
+            postgres,
+            profile,
+        }
     }
-    .await
-    .unwrap_or_else(|| "unknown".into());
-    let profile = if cfg!(debug_assertions) {
-        "debug (numbers are not meaningful)"
-    } else {
-        "release"
-    };
-    format!(
-        "# walrus MVP performance baseline\n\n\
-         - Date: {}\n\
-         - Commit: {}\n\
-         - Hardware: {}\n\
-         - Postgres: {version} (Docker, local; the engine, the load generator and the clients \
-         all run on the same machine)\n\
-         - Build profile: {profile}\n\n",
-        date(),
-        git_hash(),
-        machine()
-    )
+
+    pub fn header(&self) -> String {
+        format!(
+            "# walrus MVP performance baseline\n\n\
+             - Date: {}\n\
+             - Commit: {}{}\n\
+             - Hardware: {}\n\
+             - Postgres: {} (Docker, local; the engine, the load generator and the clients \
+             all run on the same machine)\n\
+             - Build profile: {}\n\n",
+            date(),
+            git_hash(),
+            if dirty() {
+                " (uncommitted changes)"
+            } else {
+                ""
+            },
+            self.hardware,
+            self.postgres,
+            self.profile
+        )
+    }
 }

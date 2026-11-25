@@ -9,6 +9,7 @@ use walrus_engine::metrics::Metrics;
 use walrus_protocol::{Commit, Op, Rows};
 
 use crate::env::{table, with_engine};
+use crate::guard::Outcome;
 use crate::sse::Sse;
 
 const ROWS: u64 = 100_000;
@@ -29,7 +30,7 @@ const CHANGES: &str = "
       FROM generate_series(100001, 100010) i;
     COMMIT;";
 
-pub async fn run() -> Result<String> {
+pub async fn run() -> Result<Outcome> {
     with_engine(SETUP, &[TABLE], async |env, engine| {
         let (addr, m) = (engine.addr, &engine.metrics);
         let pg = env.client().await?;
@@ -128,7 +129,8 @@ pub async fn run() -> Result<String> {
         } else {
             "`pg_stat_statements` is not available, so Postgres time is not reported."
         };
-        Ok(format!(
+        let metrics = metrics(&steps);
+        let section = format!(
             "## B3: catch-up cost\n\n\
              Table `bench_big (id bigint pk, payload text)` with {ROWS} rows of about 200 bytes \
              of payload. Time is measured inside the client, from sending the request until the \
@@ -136,9 +138,30 @@ pub async fn run() -> Result<String> {
              that event. A full catch-up was run once beforehand and discarded (warm-up). The \
              change set is one transaction: 70 updates, 20 deletes, 10 inserts (100 rows). \
              Rows events are parsed after the clock stops.\n\n{t}\n{pg_note}\n"
-        ))
+        );
+        Ok(Outcome { section, metrics })
     })
     .await
+}
+
+/// The tracked metrics: steps (a) full, (b) delta and (d) nothing changed. Postgres figures are
+/// left out when `pg_stat_statements` is not available.
+fn metrics(steps: &[Step]) -> Vec<(&'static str, f64)> {
+    let (full, delta, none) = (&steps[0], &steps[1], &steps[3]);
+    let mut m = vec![
+        ("b3_full_ms", full.c.ms),
+        ("b3_full_bytes", full.c.bytes as f64),
+        ("b3_delta_ms", delta.c.ms),
+        ("b3_delta_bytes", delta.c.bytes as f64),
+        ("b3_delta_rows_read", delta.engine.rows_read_delta as f64),
+        ("b3_none_ms", none.c.ms),
+    ];
+    if let (Some(f), Some(d), Some(n)) = (&full.pg, &delta.pg, &none.pg) {
+        m.push(("b3_full_pg_ms", f.exec_ms));
+        m.push(("b3_delta_pg_ms", d.exec_ms));
+        m.push(("b3_none_pg_calls", n.calls as f64));
+    }
+    m
 }
 
 struct Step {

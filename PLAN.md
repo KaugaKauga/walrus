@@ -23,7 +23,7 @@ This document is the plan for the first version:
 
 **MVP milestones M0–M6 are done.**
 
-- `scripts/check.sh` is green: fmt, clippy `-D warnings`, 146 unit and integration tests against
+- `scripts/test.sh` is green: fmt, clippy `-D warnings`, 146 unit and integration tests against
   Postgres 17. The seeded model test is part of the suite.
 - The baseline is recorded in `bench/results/2026-11-25-df3dfbc.md`.
 

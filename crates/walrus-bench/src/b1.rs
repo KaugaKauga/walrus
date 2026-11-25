@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, watch};
 use walrus_protocol::{Commit, Op, Rows};
 
 use crate::env::{ms, percentile, table, wall_us, with_engine};
+use crate::guard::Outcome;
 use crate::sse::Sse;
 
 const ROWS: u64 = 1000;
@@ -21,7 +22,7 @@ const SETUP: &str = "
     CREATE TABLE bench (id bigint PRIMARY KEY, sent_us bigint NOT NULL, payload text NOT NULL);
     INSERT INTO bench SELECT i, 0, repeat('x', 100) FROM generate_series(1, 1000) i;";
 
-pub async fn run() -> Result<String> {
+pub async fn run() -> Result<Outcome> {
     with_engine(SETUP, &["public.bench"], async |env, engine| {
         let addr = engine.addr;
         let (ready_tx, mut ready_rx) = mpsc::channel(CLIENTS);
@@ -76,9 +77,8 @@ pub async fn run() -> Result<String> {
             latencies.extend(lat);
             counts.push(n);
         }
-        if counts.iter().any(|&n| n != total) {
-            bail!("clients received {counts:?} updates, writer committed {total}");
-        }
+        // Not an error here: the guardrail tracks it as an exact metric.
+        let missed = total * CLIENTS as u64 - counts.iter().sum::<u64>();
 
         latencies.sort_unstable();
         commit_rtt.sort_unstable();
@@ -98,17 +98,23 @@ pub async fn run() -> Result<String> {
                 row("writer COMMIT round trip", &commit_rtt),
             ],
         );
-        Ok(format!(
+        let metrics = vec![
+            ("b1_p50_ms", percentile(&latencies, 0.5) as f64 / 1000.0),
+            ("b1_p99_ms", percentile(&latencies, 0.99) as f64 / 1000.0),
+            ("b1_missed_updates", missed as f64),
+        ];
+        let section = format!(
             "## B1: commit to client latency\n\n\
              Table `bench` with {ROWS} rows, {CLIENTS} clients, one writer at {TXN_PER_SEC} txn/s \
              for {SECONDS} s (ran {:.1} s). Each txn updates one random row; `sent_us` is taken \
              right before the `BEGIN; UPDATE; COMMIT` round trip. A client's latency for a row \
              is measured when the `commit` event that carries the row arrives.\n\n{t}\n\
-             Updates written: {total}. Updates received per client: {counts:?} (all equal \
-             to written). Latency samples: {}.\n",
+             Updates written: {total}. Updates received per client: {counts:?} (missed in total: \
+             {missed}). Latency samples: {}.\n",
             wrote_for.as_secs_f64(),
             latencies.len()
-        ))
+        );
+        Ok(Outcome { section, metrics })
     })
     .await
 }

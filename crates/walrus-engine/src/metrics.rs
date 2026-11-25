@@ -30,6 +30,7 @@ metrics! {
     txns_skipped: "Replayed transactions skipped (commit LSN <= last_lsn).",
     changes_applied: "Row changes applied to the change index.",
     index_commits: "Change index store commits (group commits).",
+    index_commit_micros: "Total microseconds spent in change index store commits.",
     sessions_active: "Open SSE sessions.",
     catchups_none: "Catch-ups answered from the index alone (nothing changed).",
     catchups_delta: "Catch-ups that read only changed rows from Postgres.",
