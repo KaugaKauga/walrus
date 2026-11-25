@@ -97,13 +97,16 @@ pub static METRICS: &[Tracked] = &[
         0.2,
         0.0,
     ),
+    // How far behind the engine happens to be when the writers stop: 0.17–2.75 s across five
+    // runs of the same code. Only an engine that can't keep up (several seconds more) counts;
+    // sustained throughput is b2_changes_per_s's job.
     t(
         "b2_drain_s",
         "B2 engine drain time after writers stop",
         "s",
         Lower,
         1.0,
-        1.0,
+        5.0,
     ),
     t(
         "b2_max_lag_mib",
