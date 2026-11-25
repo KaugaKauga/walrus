@@ -41,11 +41,23 @@ fn machine() -> String {
     )
 }
 
-/// True when tracked files differ from HEAD. `bench/` is ignored: a run writes its own
-/// results there, which must not make the next run look dirty.
+/// True when anything that can change the numbers differs from HEAD (modified or untracked):
+/// the code, the dependency lock and the Postgres setup. Docs, scripts and `bench/` (where runs
+/// write their own results) don't make a run dirty.
 pub fn dirty() -> bool {
-    command_output("git", &["status", "--porcelain", "--", ".", ":!bench"])
-        .is_some_and(|out| !out.is_empty())
+    command_output(
+        "git",
+        &[
+            "status",
+            "--porcelain",
+            "--",
+            "crates",
+            "Cargo.toml",
+            "Cargo.lock",
+            "docker-compose.yml",
+        ],
+    )
+    .is_some_and(|out| !out.is_empty())
 }
 
 /// What the report header and the result JSON say about the machine and build.
