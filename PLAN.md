@@ -25,7 +25,7 @@ This document is the plan for the first version:
 
 - `scripts/test.sh` is green: fmt, clippy `-D warnings`, 146 unit and integration tests against
   Postgres 17. The seeded model test is part of the suite.
-- The baseline is recorded in `bench/results/2026-11-25-df3dfbc.md`.
+- Benchmark history and the current baseline: `bench/HISTORY.md` (`scripts/bench.sh --record`).
 
 | Scenario | Result | Target |
 |---|---|---|
@@ -765,7 +765,7 @@ measured end to end, on the same machine and clock:
 | B2 | Writes as fast as possible for 30 s | Sustained change rate, replication lag, store commit latency |
 | B3 | Clients reconnect after N writes, delta vs forced full | Bytes, Postgres time, time until up to date |
 
-Results go to `bench/results/<date>-<commit>.md` with hardware details. Micro-benchmarks
+Recorded runs go to `bench/results/<date>-<commit>.{md,json}` with hardware details, the latest is the baseline (`bench/baseline.json`) and `bench/HISTORY.md` tracks them over time; dev runs (`scripts/bench.sh`) compare against it without recording. Micro-benchmarks
 (`criterion`) cover the decoder, the COPY parser, the key-literal builder and the frame encoder.
 
 ### 10.3 Phase 1b suite (planned, not part of the MVP)

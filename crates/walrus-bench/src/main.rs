@@ -1,12 +1,16 @@
 //! `walrus-bench`: the MVP performance baseline (PLAN.md §10.2) and its regression guardrail.
 //!
 //! ```text
-//! walrus-bench run [b1|b2|b3|all]     run scenarios, write bench/results/<date>-<commit>.{md,json}
-//! walrus-bench compare [result.json]  compare with bench/baseline.json (exit 1 on a regression)
-//! walrus-bench accept [result.json]   make a result the new baseline
+//! walrus-bench run [b1|b2|b3|all]     run, write target/bench/<date>-<commit>.{md,json}
+//! walrus-bench compare [result.json]  compare with bench/baseline.json (exit 1 on a regression);
+//!                                     default: the newest run in target/bench
+//! walrus-bench record [--force]       full run of the committed tree; unless it regressed (or
+//!                                     --force), save it to bench/results, make it the
+//!                                     baseline and regenerate bench/HISTORY.md
 //! ```
 //!
-//! A bare `b1|b2|b3|all` still means `run`. Without a result path, the newest one is used.
+//! Dev runs (`run` + `compare`) never write under `bench/`; only `record` does. A bare
+//! `b1|b2|b3|all` means `run`.
 
 mod b1;
 mod b2;
@@ -42,28 +46,80 @@ async fn real_main() -> Result<ExitCode> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
     match arg(0) {
-        Some("run") => run(arg(1).unwrap_or("all")).await?,
+        Some("run") => {
+            run(arg(1).unwrap_or("all")).await?;
+        }
         Some("compare") => {
-            let path = result_path(arg(1))?;
+            let path = match arg(1) {
+                Some(p) => PathBuf::from(p),
+                None => record::newest(record::SCRATCH_DIR)?,
+            };
             if history::compare(&path)? {
                 return Ok(ExitCode::FAILURE);
             }
         }
-        Some("accept") => history::accept(&result_path(arg(1))?)?,
-        // The original interface: `walrus-bench [b1|b2|b3|all]`.
-        other => run(other.unwrap_or("all")).await?,
+        Some("record") => return record_run(arg(1) == Some("--force")).await,
+        other => {
+            run(other.unwrap_or("all")).await?;
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn result_path(given: Option<&str>) -> Result<PathBuf> {
-    match given {
-        Some(p) => Ok(p.into()),
-        None => record::newest(),
+/// The end-of-work run: measure the committed tree and, unless it regressed, add it to the
+/// history as the new baseline.
+async fn record_run(force: bool) -> Result<ExitCode> {
+    // A recorded run must describe a commit, or the history can't say what it measured.
+    if hardware::dirty() {
+        bail!(
+            "uncommitted changes in crates/, Cargo.* or docker-compose.yml: commit them first, \
+             so the recorded run describes a commit (see `git status`)"
+        );
     }
+    let json = run("all").await?;
+    if history::compare(&json)? && !force {
+        println!(
+            "\nNot recorded: a tracked metric regressed. Fix it, or if the trade-off is \
+             intended, record anyway with `scripts/bench.sh --record --force`."
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+
+    std::fs::create_dir_all(record::RESULTS_DIR)?;
+    let name = json
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .context("result file name")?;
+    let stem = unique_stem(record::RESULTS_DIR, name);
+    std::fs::copy(json.with_extension("md"), format!("{stem}.md"))?;
+    std::fs::copy(&json, format!("{stem}.json"))?;
+    std::fs::copy(&json, record::BASELINE)?;
+    history::write_history()?;
+    println!(
+        "\nRecorded {stem}.{{json,md}}; it is now the baseline ({}). Updated {}.\n\
+         Commit them: git add bench && git commit -m \"bench: record {}\"",
+        record::BASELINE,
+        history::HISTORY,
+        hardware::git_hash()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
-async fn run(which: &str) -> Result<()> {
+/// `dir/name`, or `dir/name-2`, `-3`, ... if that result already exists, so no run overwrites
+/// another (several runs of one commit on one day).
+fn unique_stem(dir: &str, name: &str) -> String {
+    let stem = format!("{dir}/{name}");
+    let mut candidate = stem.clone();
+    let mut n = 1;
+    while std::path::Path::new(&format!("{candidate}.json")).exists() {
+        n += 1;
+        candidate = format!("{stem}-{n}");
+    }
+    candidate
+}
+
+/// Run scenarios and write the report and result into `target/bench`; returns the JSON path.
+async fn run(which: &str) -> Result<PathBuf> {
     let scenarios: &[&str] = match which {
         "b1" => &["b1"],
         "b2" => &["b2"],
@@ -95,21 +151,16 @@ async fn run(which: &str) -> Result<()> {
     } else {
         format!("-{which}")
     };
-    // Several runs of one commit on one day get -2, -3, ... so none overwrites another.
-    std::fs::create_dir_all(record::RESULTS_DIR)?;
-    let stem = format!(
-        "{}/{}-{}{}{suffix}",
-        record::RESULTS_DIR,
-        hardware::date(),
-        hardware::git_hash(),
-        if dirty { "-dirty" } else { "" }
+    std::fs::create_dir_all(record::SCRATCH_DIR)?;
+    let base = unique_stem(
+        record::SCRATCH_DIR,
+        &format!(
+            "{}-{}{}{suffix}",
+            hardware::date(),
+            hardware::git_hash(),
+            if dirty { "-dirty" } else { "" }
+        ),
     );
-    let mut base = stem.clone();
-    let mut n = 1;
-    while std::path::Path::new(&format!("{base}.json")).exists() {
-        n += 1;
-        base = format!("{stem}-{n}");
-    }
 
     let rec = record::Record {
         timestamp: std::time::SystemTime::now()
@@ -127,7 +178,7 @@ async fn run(which: &str) -> Result<()> {
     std::fs::write(format!("{base}.md"), report)?;
     std::fs::write(format!("{base}.json"), rec.to_json())?;
     eprintln!("wrote {base}.md and {base}.json");
-    Ok(())
+    Ok(PathBuf::from(format!("{base}.json")))
 }
 
 /// Stdout of a command, trimmed; `None` if it cannot run or fails.

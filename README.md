@@ -72,16 +72,24 @@ Endpoints: `/v1/stream`, `/health`, `/ready`, `/metrics` (Prometheus text).
 ## Development
 
 ```sh
-scripts/test.sh          # starts Postgres; fmt, clippy -D warnings, all tests (extra args go to cargo test)
-scripts/bench.sh         # release benchmark (b1|b2|b3|all), then compare with bench/baseline.json
+scripts/test.sh                # starts Postgres; fmt, clippy -D warnings, all tests (extra args go to cargo test)
+scripts/bench.sh [b1|b2|b3]    # while developing: benchmark and compare with the baseline; changes nothing in bench/
+scripts/bench.sh --record      # work done, before pushing: record the run as the new baseline + history
 ```
 
-Benchmark guardrail: run `scripts/bench.sh` before and after a change. It writes
-`bench/results/<date>-<commit>.{md,json}`, regenerates `bench/HISTORY.md` (latest vs baseline,
-history, trends) and exits 1 if a tracked metric regressed beyond its tolerance (see
-`crates/walrus-bench/src/guard.rs`). When a change intentionally moves the numbers, run
-`scripts/bench.sh --accept` and commit `bench/baseline.json`, the new result files and
-`bench/HISTORY.md`. Timings are only comparable on the same machine.
+Benchmark guardrail ([bench/HISTORY.md](bench/HISTORY.md)):
+
+- **While developing**, run `scripts/bench.sh` as often as you like.
+  - It compares against `bench/baseline.json` and exits 1 if a tracked metric regressed beyond
+    its tolerance (`crates/walrus-bench/src/guard.rs`).
+  - Its output goes to `target/bench/`; nothing under `bench/` changes.
+- **When the work is done**, commit it, then run `scripts/bench.sh --record`.
+  - This runs the full suite on the committed tree.
+  - Unless something regressed, it saves the run to `bench/results/`, makes it the baseline and
+    regenerates `bench/HISTORY.md`. Commit `bench/` and push.
+  - For an intended trade-off, `--record --force` records despite a regression.
+
+Timings are only comparable on the same machine.
 
 Layout:
 

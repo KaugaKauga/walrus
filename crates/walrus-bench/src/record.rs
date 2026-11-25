@@ -1,4 +1,4 @@
-//! The machine-readable result of one run (`bench/results/<date>-<commit>[-dirty].json`).
+//! The machine-readable result of one run (`<date>-<commit>[-dirty].json`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -6,8 +6,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+/// Recorded runs: the history (committed).
 pub const RESULTS_DIR: &str = "bench/results";
+/// The latest recorded run, which every run is compared against.
 pub const BASELINE: &str = "bench/baseline.json";
+/// Where every run writes first. Dev runs stay here (git-ignored); `record` copies to RESULTS_DIR.
+pub const SCRATCH_DIR: &str = "target/bench";
 
 pub struct Record {
     pub timestamp: u64,
@@ -79,10 +83,10 @@ impl Record {
     }
 }
 
-/// Every `bench/results/*.json`, oldest first, with its path.
-pub fn load_all() -> Result<Vec<(PathBuf, Record)>> {
+/// Every `*.json` result in `dir`, oldest first, with its path.
+pub fn load_all(dir: &str) -> Result<Vec<(PathBuf, Record)>> {
     let mut all = Vec::new();
-    let Ok(dir) = std::fs::read_dir(RESULTS_DIR) else {
+    let Ok(dir) = std::fs::read_dir(dir) else {
         return Ok(all);
     };
     for entry in dir {
@@ -96,9 +100,9 @@ pub fn load_all() -> Result<Vec<(PathBuf, Record)>> {
     Ok(all)
 }
 
-pub fn newest() -> Result<PathBuf> {
-    load_all()?
+pub fn newest(dir: &str) -> Result<PathBuf> {
+    load_all(dir)?
         .pop()
         .map(|(path, _)| path)
-        .with_context(|| format!("no result JSON in {RESULTS_DIR}; run `walrus-bench run` first"))
+        .with_context(|| format!("no result JSON in {dir}; run `walrus-bench run` first"))
 }
