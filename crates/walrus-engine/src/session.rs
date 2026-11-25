@@ -13,7 +13,9 @@ use tokio_postgres::IsolationLevel;
 use walrus_protocol::{Offset, Op, SSE_KEEPALIVE, SSE_RETRY};
 
 use crate::change_index::{IndexReader, Lookup};
-use crate::encode::{EncodedTxn, Item, commit_frame, encode_items, rows_frames, table_reset_frame};
+use crate::encode::{
+    EncodedTxn, Item, commit_frame, encode_items, op_key, rows_frames, table_reset_frame,
+};
 use crate::metrics::Metrics;
 use crate::pg::read;
 use crate::pg::xid::RecentXids;
@@ -180,16 +182,6 @@ fn decide(
         JoinDecision::Skip
     } else {
         JoinDecision::Filtered(out)
-    }
-}
-
-/// The key an op targets. Same contract as `encode::op_key`; kept local so the join logic is
-/// self-contained and testable. Key columns are never NULL or unchanged in pgoutput, so a
-/// patch's row always holds its key.
-fn op_key(table: &TableSchema, op: &Op) -> Key {
-    match op {
-        Op::Delete(key) => key.clone(),
-        Op::Upsert(row) | Op::Patch { row, .. } => table.key_of(row).unwrap_or_default(),
     }
 }
 
