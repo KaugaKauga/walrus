@@ -41,6 +41,7 @@ pub struct TestDb {
     pub slot: String,
     pub data_dir: tempfile::TempDir,
     admin: Client,
+    cleaned: bool,
 }
 
 impl TestDb {
@@ -60,6 +61,7 @@ impl TestDb {
             data_dir: tempfile::tempdir().expect("tempdir"),
             name,
             admin,
+            cleaned: false,
         };
         db.client()
             .await
@@ -142,39 +144,68 @@ impl TestDb {
         rows
     }
 
-    /// Drop the slot (waiting for it to become inactive) and the database.
-    pub async fn cleanup(self) {
-        for _ in 0..100 {
-            let res = self
-                .admin
-                .execute(
-                    "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots \
-                     WHERE slot_name = $1 AND NOT active",
-                    &[&self.slot],
-                )
-                .await;
-            let remaining = self
-                .admin
-                .query_one(
-                    "SELECT count(*) FROM pg_replication_slots WHERE slot_name = $1",
-                    &[&self.slot],
-                )
-                .await
-                .expect("count slots")
-                .get::<_, i64>(0);
-            if res.is_ok() && remaining == 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        let _ = self
-            .admin
-            .batch_execute(&format!(
-                "DROP DATABASE IF EXISTS {} WITH (FORCE)",
-                self.name
-            ))
-            .await;
+    /// Drop the slot and the database. Also runs (from `Drop`) when a test panics, so failed
+    /// tests don't leave slots behind that make Postgres keep WAL.
+    pub async fn cleanup(mut self) {
+        drop_test_db(&self.admin, &self.name, &self.slot).await;
+        self.cleaned = true;
     }
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        // Panic path: the test's runtime is unwinding, so clean up on a runtime of our own.
+        let (name, slot) = (self.name.clone(), self.slot.clone());
+        let _ = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("cleanup runtime");
+            rt.block_on(async {
+                let admin = connect(&format!("{PG}/postgres")).await;
+                drop_test_db(&admin, &name, &slot).await;
+            });
+        })
+        .join();
+    }
+}
+
+/// Stop whatever still streams from the slot, drop the slot, drop the database.
+async fn drop_test_db(admin: &Client, name: &str, slot: &str) {
+    for _ in 0..50 {
+        let _ = admin
+            .execute(
+                "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots \
+                 WHERE slot_name = $1 AND active",
+                &[&slot],
+            )
+            .await;
+        let _ = admin
+            .execute(
+                "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots \
+                 WHERE slot_name = $1 AND NOT active",
+                &[&slot],
+            )
+            .await;
+        let remaining: i64 = admin
+            .query_one(
+                "SELECT count(*) FROM pg_replication_slots WHERE slot_name = $1",
+                &[&slot],
+            )
+            .await
+            .map(|r| r.get(0))
+            .unwrap_or(1);
+        if remaining == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = admin
+        .batch_execute(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
+        .await;
 }
 
 pub async fn connect(url: &str) -> Client {
