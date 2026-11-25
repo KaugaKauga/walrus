@@ -1,6 +1,6 @@
 # walrus
 
-**WAL + Rust.** A sync engine that streams Postgres tables to clients over Server-Sent Events.
+**WALRUS** A sync engine that streams Postgres tables to clients over Server-Sent Events.
 Clients keep a local copy that converges to the latest state, and a reconnecting client
 receives only what changed while it was away.
 
