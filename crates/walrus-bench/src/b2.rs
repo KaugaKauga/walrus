@@ -21,7 +21,6 @@ const KEY_SPACE: i64 = 50_000;
 const SETUP: &str =
     "CREATE TABLE bench_w (id bigint PRIMARY KEY, v bigint NOT NULL, payload text NOT NULL);";
 
-/// What the one subscribed client saw.
 #[derive(Default)]
 struct Seen {
     commits: AtomicU64,
@@ -73,7 +72,6 @@ pub async fn run() -> Result<Outcome> {
         commit_us.sort_unstable();
         let drain_start = Instant::now();
 
-        // Drain: wait until the engine applied every transaction and the client has seen them.
         let applied_total = loop {
             let applied = Metrics::get(&m.txns_applied) - before.txns;
             if applied >= txns {
@@ -255,7 +253,6 @@ async fn current_wal(pg: &Client) -> Result<u64> {
     Ok(row.get::<_, i64>(0) as u64)
 }
 
-/// The engine counters this scenario reports on.
 struct Snapshot {
     txns: u64,
     changes: u64,

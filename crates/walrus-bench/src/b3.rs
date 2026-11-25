@@ -213,7 +213,6 @@ impl CatchUp {
     }
 }
 
-/// Connect, read until the first `commit` event, and disconnect.
 async fn catch_up(addr: SocketAddr, offset: Option<&str>) -> Result<CatchUp> {
     let start = Instant::now();
     let mut sse = Sse::open(addr, TABLE, offset).await?;
@@ -239,7 +238,6 @@ async fn catch_up(addr: SocketAddr, offset: Option<&str>) -> Result<CatchUp> {
     }
 }
 
-/// Engine counters that a catch-up changes.
 struct Counters {
     none: u64,
     delta: u64,

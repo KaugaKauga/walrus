@@ -60,7 +60,6 @@ pub fn dirty() -> bool {
     .is_some_and(|out| !out.is_empty())
 }
 
-/// What the report header and the result JSON say about the machine and build.
 pub struct Meta {
     pub hardware: String,
     pub postgres: String,

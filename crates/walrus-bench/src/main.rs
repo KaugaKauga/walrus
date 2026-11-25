@@ -118,7 +118,6 @@ fn unique_stem(dir: &str, name: &str) -> String {
     candidate
 }
 
-/// Run scenarios and write the report and result into `target/bench`; returns the JSON path.
 async fn run(which: &str) -> Result<PathBuf> {
     let scenarios: &[&str] = match which {
         "b1" => &["b1"],
@@ -181,7 +180,6 @@ async fn run(which: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(format!("{base}.json")))
 }
 
-/// Stdout of a command, trimmed; `None` if it cannot run or fails.
 fn command_output(cmd: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(cmd).args(args).output().ok()?;
     out.status

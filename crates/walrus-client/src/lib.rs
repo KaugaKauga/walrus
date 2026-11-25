@@ -9,7 +9,6 @@ use bytes::Bytes;
 use futures_util::{Stream as FuturesStream, StreamExt};
 use walrus_protocol::{ColumnInfo, Commit, Key, Offset, Op, Row, Rows, TableReset, event};
 
-/// One table's local copy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Table {
     pub columns: Vec<ColumnInfo>,
@@ -35,17 +34,14 @@ pub enum End {
     Broken(String),
 }
 
-/// An open `/v1/stream` connection.
 pub struct Stream {
     body: Pin<Box<dyn FuturesStream<Item = reqwest::Result<Bytes>> + Send>>,
     parser: SseParser,
-    /// Parsed SSE events not yet consumed.
     ready: VecDeque<SseEvent>,
     /// `table-reset` / `rows` events since the last commit.
     pending: Vec<Event>,
 }
 
-/// One dispatched SSE event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SseEvent {
     /// `message` when no `event:` field was given.
@@ -204,7 +200,6 @@ impl Table {
     }
 }
 
-/// A parsed, not yet applied event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     TableReset(walrus_protocol::TableReset),

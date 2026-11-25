@@ -34,7 +34,6 @@ pub fn init_tracing() {
         .try_init();
 }
 
-/// One test's database, slot, publication and data directory.
 pub struct TestDb {
     pub name: String,
     pub url: String,
@@ -45,7 +44,6 @@ pub struct TestDb {
 }
 
 impl TestDb {
-    /// Create a fresh database with the fixture loaded.
     pub async fn new() -> TestDb {
         init_tracing();
         let suffix = format!("{:016x}", rand::random::<u64>());
@@ -71,7 +69,6 @@ impl TestDb {
         db
     }
 
-    /// A SQL client with the engine's pinned display settings.
     pub async fn client(&self) -> Client {
         connect(&self.url).await
     }
@@ -89,7 +86,6 @@ impl TestDb {
         }
     }
 
-    /// Start an engine on this database and wait until it streams.
     pub async fn start_engine(&self) -> Engine {
         self.start_with(self.config()).await.expect("engine start")
     }
@@ -328,7 +324,6 @@ impl Subscriber {
         }
     }
 
-    /// Stop streaming and return the last committed state (with its offset).
     pub async fn stop(self) -> State {
         self.task.abort();
         let _ = self.task.await;
@@ -452,7 +447,6 @@ fn random_statement(rng: &mut impl rand::Rng) -> String {
     }
 }
 
-/// Poll `cond` every 50 ms for up to 10 s.
 pub async fn wait_for(cond: impl Fn() -> bool, what: &str) {
     for _ in 0..200 {
         if cond() {

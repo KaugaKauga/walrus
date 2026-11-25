@@ -64,7 +64,6 @@ pub async fn run() -> Result<Outcome> {
         }
         let wrote_for = started.elapsed();
 
-        // Wait for every client to have seen every update.
         let deadline = Instant::now() + Duration::from_secs(20);
         while clients.iter().any(|(r, _)| r.load(Relaxed) < total) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(50)).await;

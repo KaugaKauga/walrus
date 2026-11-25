@@ -42,7 +42,6 @@ impl fmt::Display for Offset {
     }
 }
 
-/// Parse error for [`Offset`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OffsetError;
 

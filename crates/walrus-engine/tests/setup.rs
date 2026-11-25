@@ -9,7 +9,6 @@ use walrus_engine::pg::setup::{
 
 const ADMIN_URL: &str = "postgres://postgres:postgres@localhost:54329/postgres";
 
-/// A uniquely named database, plus a slot name derived from it.
 struct TestDb {
     admin: Client,
     db: String,
@@ -58,7 +57,6 @@ impl TestDb {
         format!("{err:#}")
     }
 
-    /// Drop the slot, then the database.
     async fn cleanup(self) {
         let TestDb {
             admin,

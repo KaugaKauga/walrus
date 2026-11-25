@@ -83,7 +83,6 @@ impl Record {
     }
 }
 
-/// Every `*.json` result in `dir`, oldest first, with its path.
 pub fn load_all(dir: &str) -> Result<Vec<(PathBuf, Record)>> {
     let mut all = Vec::new();
     let Ok(dir) = std::fs::read_dir(dir) else {

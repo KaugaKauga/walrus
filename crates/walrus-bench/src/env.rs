@@ -140,7 +140,6 @@ pub async fn with_engine<T>(
     result
 }
 
-/// Percentile of a sorted slice (nearest rank).
 pub fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -149,12 +148,10 @@ pub fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
-/// Microseconds as milliseconds with two decimals.
 pub fn ms(us: u64) -> String {
     format!("{:.2}", us as f64 / 1000.0)
 }
 
-/// A markdown table.
 pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     let mut out = format!(
         "| {} |\n|{}\n",

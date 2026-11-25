@@ -24,7 +24,6 @@ async fn model() {
     }
 }
 
-/// A client's table subset and last saved state.
 type Saved = (Vec<String>, State);
 
 async fn run(seed: u64) {
