@@ -120,7 +120,7 @@ Everything in the MVP serves one of these two goals.
 | I5 | Above a table's floor, the index holds the commit LSN of every key's latest change. | writer + store |
 | I6 | When the engine cannot guarantee I5 for a table (truncate, retention), it raises that table's floor. It never guesses; a full catch-up is always correct. | writer |
 | I7 | A session subscribes to the live stream before it reads the index at `P0` and before it takes a Postgres snapshot. It skips live transactions `<= P0`. | session |
-| I8 | A catch-up snapshot is used only if none of its in-progress transactions has already committed (§7.2). During the join, a streamed transaction visible in the snapshot is dropped for exactly the rows the catch-up read, and sent for all others. | session + pg/xid |
+| I8 | A catch-up snapshot is used only if it can see every transaction the engine applied at or before `P0` (§7.2). During the join, a streamed transaction visible in the snapshot is dropped for exactly the rows the catch-up read, and sent for all others. | session + pg/xid |
 | I9 | Catch-up reads (COPY) and the stream render values identically: same session display settings, same columns. | pg/setup |
 | I10 | New-epoch setup is all-or-nothing: `initialized` is set in the same store transaction that records the epoch and floors, after the slot exists. | pg/setup + store |
 
@@ -309,6 +309,19 @@ Records are small (a key and an LSN). The spike benchmarks our exact workload, n
 The decision and the numbers are recorded in §17. Both candidates expose the same small set of
 operations, and the rest of the engine is written against the concrete winner.
 
+**Outcome (M0, 2026-11-24):** we took the default bet, SQLite, without a redb comparison. Quick
+numbers on a MacBook (release build):
+
+| Measurement | Result |
+|---|---|
+| Batches of 1 key per commit | ≈ 7,100 commits/s |
+| Batches of 1,000 keys per commit | ≈ 449,000 keys/s |
+| Disk per uuid key, both indexes | ≈ 131 bytes |
+
+macOS SQLite does not use `F_FULLFSYNC` by default, so the batch-of-1 figure overstates true
+flush throughput there. Production targets Linux. The redb comparison is deferred to Phase 1b,
+and only happens if the index store ever shows up as a bottleneck.
+
 Durability note: in WAL mode, SQLite's `synchronous=NORMAL` can lose the last commits on power
 failure. Combined with I1, that would lose index entries permanently (Postgres would not resend
 them) and break I5, leaving clients stale. So we use `synchronous=FULL` and rely on group commit
@@ -382,7 +395,8 @@ reconnect and receive it through a catch-up from Postgres, which has backpressur
 Delta-key lookups are short read transactions on tokio's blocking pool. A table's delta-key set
 is capped (a constant). Above the cap, or above a constant fraction of the table's estimated size
 (`pg_class.reltuples`), the table falls back to a full read. That bounds session memory, and is
-cheaper anyway once most rows have changed. Both constants come from benchmark S7.
+cheaper anyway once most rows have changed. Both constants come from benchmark S7. The MVP
+implements the absolute cap only (`DELTA_CAP`); the fraction threshold waits for S7's numbers.
 
 ### 5.5 Retention and floors
 
@@ -403,9 +417,13 @@ cheaper anyway once most rows have changed. Both constants come from benchmark S
 ### 6.1 Request
 
 ```
-GET /v1/stream?tables=public.todos,public.lists
+GET /v1/stream?tables=public.todos,public.lists[&offset=<offset>]
 Last-Event-ID: <offset>          (optional; browsers send it automatically on reconnect)
 ```
+
+- The offset comes from the `Last-Event-ID` header or the `offset` query parameter. The header
+  wins: a browser's `EventSource` sends it on automatic reconnects. The query parameter is how a
+  persisted client resumes on a fresh page load, where `EventSource` can't set headers.
 
 - `tables`: comma-separated, schema-qualified, must be a subset of the configured tables.
 - Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-store`,
@@ -418,8 +436,8 @@ Last-Event-ID: <offset>          (optional; browsers send it automatically on re
 ### 6.2 Offsets
 
 `<epoch as 16 hex digits>-<LSN as 16 hex digits>`, e.g. `9f2c4e1a7b3d5f60-00000000016b3740`.
-Clients treat it as opaque. An epoch mismatch, an unparsable offset, or an LSN above the store's
-`last_lsn` is treated as "no offset".
+Clients treat it as opaque. An unparsable offset is a `400`. An epoch mismatch, or an LSN above
+the store's `last_lsn`, is treated as "no offset".
 
 ### 6.3 Events
 
@@ -512,10 +530,9 @@ queried when nothing changed, and always goes through the catch-up pool.
      commit(P0); go to 6.                                 -- Postgres not queried
 5. Take a catch-up connection (waits while all are busy):
      BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
-     SELECT s, ARRAY(SELECT x FROM pg_snapshot_xip(s) AS x
-                     WHERE pg_xact_status(x) = 'committed')
-       FROM pg_current_snapshot() AS s;                   -- snapshot S + check (§7.2)
-     check non-empty → ROLLBACK, back off briefly, retry (bounded)
+     SELECT pg_current_snapshot();                        -- snapshot S
+     S can't see an applied transaction with lsn <= P0 (§7.2)
+       → ROLLBACK, back off briefly, retry (bounded)
      full tables:  table-reset, COPY the whole table
      delta tables: COPY K_t in batches → "u" for rows returned, "d" for keys not returned
      COMMIT; return the connection.
@@ -565,8 +582,7 @@ visible(xid) = precedes(xid, xmin) || (precedes(xid, xmax) && xid ∉ in_progres
 
 ### 7.2 Commits that are streamed before they are visible
 
-Our reading of Postgres's commit path (`RecordTransactionCommit` in `xact.c`) is that a backend
-commits in this order:
+A backend commits in this order (`RecordTransactionCommit` in `xact.c`):
 
 1. write and flush the commit record;
 2. mark the transaction committed in the commit log (`pg_xact`);
@@ -574,18 +590,40 @@ commits in this order:
 4. leave the process array, which makes it visible to new snapshots.
 
 The walsender can decode and stream a commit as soon as step 1 is done. So the engine can index
-and broadcast a transaction that a snapshot taken just afterwards still sees as in progress. With
-synchronous replication that window lasts at least a standby round trip, and indefinitely if the
-standby is down. Test §11.3 #4 must confirm this behavior.
+and broadcast a transaction that a snapshot taken just afterwards still can't see. With
+synchronous replication the window lasts at least a standby round trip, and indefinitely if the
+standby is down. Test §11.3 #4 reproduces this: with a missing synchronous standby, the engine
+indexes a commit that other sessions cannot see yet.
 
-The check in step 5 catches it: such a transaction is in S's in-progress list, yet already
-committed in `pg_xact`. The check is conservative. A transaction that committed normally between
-taking S and running the check also triggers a retry, which costs one round trip. Retries are
-counted in the metrics (§9).
+**Postgres can't tell a session about such a transaction** (verified, 2026-11-25):
 
-A residual window remains between steps 1 and 2: microseconds inside a critical section. To hit
-it, the engine would have to decode, fsync and broadcast the transaction, and a session would have
-to take its snapshot, all within that window. We accept this for the MVP (§14).
+- Snapshot `xmax` is one past the latest *completed* xid. When the waiting transaction has the
+  highest xid, it is at or above `xmax` and therefore not in the snapshot's in-progress list at
+  all (observed: snapshot `19190:19190:` while xid 19190 waited).
+- `pg_xact_status` reports a transaction that waits for its standby as `in progress`, not
+  `committed`.
+
+So the check is the engine's (`pg/xid.rs` `RecentXids`):
+
+- The writer records every applied transaction as (xid, commit LSN). It widens the streamed
+  32-bit xid to 64 bits against a reference: `pg_current_xact_id()` at startup, then the highest
+  xid seen. It records each one before the index commit that covers it.
+- After taking S, a session rejects S if any recorded transaction with commit LSN `<= P0` is not
+  visible in S, comparing 64-bit xids exactly. It then retries with a later snapshot.
+- A usable S prunes every entry below its `xmin`: those transactions have finished, so they are
+  visible to every later snapshot. A cap bounds memory when no catch-ups run for a long time.
+
+Retries are counted in the metrics (§9).
+
+The check now covers the window from step 1, so no part of it is left open. What remains is
+narrower:
+
+- **Restart:** a transaction applied before an engine restart and still invisible after it isn't
+  recorded. That requires a standby stall that outlasts the restart.
+- **Cap:** an entry dropped by the cap is no longer checked. That requires more than 2^18 newer
+  transactions while one stays invisible.
+
+Both are listed in §14.
 
 ### 7.3 Live fan-out
 
@@ -964,7 +1002,8 @@ validation) starts right after.
 |---|---|
 | Postgres load from catch-ups (new clients on large tables, reconnect storms) | Catch-up connection cap, empty-delta skip, measured in S4/S5/S7. Later: cache full catch-ups (ADR 0001). |
 | Join correctness, now on every catch-up that reads Postgres | One owner (I7, I8); tests #2–#4; model test across many seeds. |
-| Residual window between flushing a commit and marking it in `pg_xact` (§7.2) | Accepted for the MVP. If it is ever observed, also check the xids the engine applied recently. |
+| A transaction applied before an engine restart and still invisible after it, or dropped from the applied-xid record by its cap (§7.2) | Accepted for the MVP. Fix if ever observed: persist the record, or prune it from a periodic `xmin` query instead of capping. |
+| The join stops filtering at the first transaction with xid ≥ `xmax`. A later transaction can still be visible in S when an earlier commit waits for a synchronous standby while an asynchronous one completes. It is then re-sent: harmless for upserts and deletes, but a patch whose `from` row the catch-up removed breaks the client, which then resyncs | Rare (needs mixed synchronous and asynchronous commits right at a catch-up). Fix if it shows up: keep filtering by exact visibility for a bounded time. |
 | Slow clients hold a catch-up connection and a snapshot open | Catch-up time limit; closed clients resume; measured. |
 | Long catch-up snapshots hold back vacuum | Bounded by the time limit; measured in S5. |
 | Delta reads not using the primary-key index (composite keys, planner estimates) | `EXPLAIN` test (#13); batch size set by benchmark. |
@@ -1027,4 +1066,6 @@ How WHERE-clause shapes and auth fit this design:
 | 2026-11-24 | **State model: change index in the engine, row data read from Postgres** ([ADR 0001](docs/decisions/0001-state-model.md)). |
 | 2026-11-24 | Unchanged large values are sent as patches; `REPLICA IDENTITY FULL` is never required. |
 | 2026-11-24 | A lost slot, a table-set change or a schema change starts a new epoch automatically. |
-| — | Store engine: pending spike (M0). |
+| 2026-11-24 | Change index store: SQLite (default bet), numbers in §5.1. |
+| 2026-11-25 | The §7.2 snapshot check is the engine's (applied xids), not `pg_xact_status`: Postgres can't report a commit that is streamed but not yet visible. |
+| 2026-11-25 | Offsets also accepted as the `offset` query parameter (header wins). |
