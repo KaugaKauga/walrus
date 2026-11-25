@@ -114,7 +114,7 @@ Everything in the MVP serves one of these two goals.
   them. Invariant violations stop the engine with a clear message; they are never papered over.
 - **Tooling:** `rustfmt`, `clippy -D warnings`, no `unsafe`, no `unwrap()` outside tests (use
   `expect("why this cannot fail")` for real invariants).
-- **Comments explain why**, especially where an invariant is enforced.
+- **Comments only where they add something** the code can't say: see [AGENTS.md](AGENTS.md).
 
 ### Proven performance patterns we commit to
 
