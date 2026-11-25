@@ -5,11 +5,8 @@
 //! escaping (doubled).
 
 /// A SQL string literal holding a Postgres array literal of `values`, every element
-/// double-quoted, e.g. `["a", "b\"c", "it's"]` → `'{"a","b\"c","it''s"}'`.
-///
-/// Element escaping (array syntax): `\` → `\\`, `"` → `\"`. Then the whole array text is wrapped
-/// in `'` with `'` doubled. Safe for arbitrary text, including the empty string, braces, commas,
-/// whitespace, `NULL`-looking strings and unicode. Postgres text never contains NUL.
+/// double-quoted: `["a", "b\"c", "it's"]` → `'{"a","b\"c","it''s"}'`. Safe for any text
+/// (Postgres text never contains NUL).
 pub fn array_literal<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
     let mut out = String::from("'{");
     for (i, value) in values.into_iter().enumerate() {

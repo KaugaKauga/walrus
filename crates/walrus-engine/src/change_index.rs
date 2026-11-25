@@ -14,7 +14,6 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 
 use crate::schema::{Key, TableId, TableSchema};
 
-/// File name inside the data directory.
 pub const FILE_NAME: &str = "walrus.sqlite";
 /// Store format version, checked on open.
 pub const FORMAT_VERSION: u32 = 1;
@@ -237,13 +236,12 @@ pub fn remove(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The writer's connection. Not `Sync`; lives on the writer thread.
+/// Not `Sync`; lives on the writer thread.
 pub struct IndexWriter {
     conn: Connection,
 }
 
 impl IndexWriter {
-    /// Begin a store transaction for a group commit.
     pub fn batch(&mut self) -> Result<Batch<'_>> {
         // Immediate: we are the only writer, so take the write lock up front.
         let tx = self
@@ -305,7 +303,6 @@ pub struct Batch<'a> {
 }
 
 impl Batch<'_> {
-    /// Upsert `(table, key) → lsn`.
     pub fn record(&mut self, table: TableId, key: &Key, lsn: u64) -> Result<()> {
         let pk = encode_key(key)?;
         self.tx
@@ -317,7 +314,7 @@ impl Batch<'_> {
         Ok(())
     }
 
-    /// Truncate: raise the table's floor to `lsn` (if higher) and delete its entries (I6).
+    /// Raises the table's floor to `lsn` (if higher) and deletes its entries (I6).
     pub fn truncate(&mut self, table: TableId, lsn: u64) -> Result<()> {
         let id = to_i64(table as u64)?;
         self.tx.execute(
@@ -351,7 +348,7 @@ pub enum Lookup {
     Keys(Vec<Key>),
 }
 
-/// A consistent read of the index (one read transaction).
+/// One read transaction: `last_lsn` and the lookups come from the same commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadSnapshot {
     /// P0 in PLAN.md §7.1.

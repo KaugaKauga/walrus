@@ -49,7 +49,6 @@ pub enum Change {
     },
 }
 
-/// Stateful decoder: remembers relation ids announced by `R` messages.
 pub struct Decoder {
     tables: Arc<Vec<TableSchema>>,
     relations: HashMap<u32, TableId>,
@@ -169,7 +168,6 @@ impl Decoder {
         })
     }
 
-    /// Read the relation id of a change message and resolve its table.
     fn table(&self, cur: &mut Cursor) -> Result<(TableId, &TableSchema)> {
         let id = self.lookup(cur.u32()?)?;
         Ok((id, &self.tables[id]))
@@ -203,7 +201,6 @@ impl Decoder {
     }
 }
 
-/// The key of `row`; errors if a key column is NULL or unchanged.
 fn key_of(schema: &TableSchema, row: &Row) -> Result<Key> {
     schema
         .key_of(row)
@@ -249,7 +246,6 @@ fn tuple(cur: &mut Cursor, schema: &TableSchema) -> Result<(Row, Vec<usize>)> {
     Ok((row, unchanged))
 }
 
-/// Bounds-checked reader over a message.
 struct Cursor<'a> {
     buf: &'a [u8],
 }
@@ -276,7 +272,6 @@ impl<'a> Cursor<'a> {
         Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
     }
 
-    /// NUL-terminated UTF-8 string.
     fn cstr(&mut self) -> Result<&'a str> {
         let end = self
             .buf

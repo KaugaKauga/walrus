@@ -7,7 +7,6 @@ use anyhow::{Context, Result, bail};
 pub struct Snapshot {
     pub xmin: u64,
     pub xmax: u64,
-    /// In-progress transaction ids.
     pub xip: Vec<u64>,
 }
 

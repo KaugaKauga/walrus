@@ -32,10 +32,9 @@ pub const KEY_TYPES: &[&str] = &[
     "bytea",
 ];
 
-/// How often slot creation reports what it is waiting for.
 const BLOCKER_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Connection parameters parsed once from `WALRUS_DATABASE_URL`.
+/// Connection parameters from `WALRUS_DATABASE_URL`.
 #[derive(Clone, Debug)]
 pub struct PgParams {
     pub host: String,
@@ -46,7 +45,6 @@ pub struct PgParams {
 }
 
 impl PgParams {
-    /// Parse a `postgres://user:password@host:port/dbname` URL (via `tokio_postgres::Config`).
     /// Only TCP hosts; defaults: port 5432, dbname = user.
     pub fn from_url(url: &str) -> Result<PgParams> {
         // The URL contains the password: never put the URL itself in an error message.
@@ -78,7 +76,6 @@ impl PgParams {
         })
     }
 
-    /// `tokio_postgres` config with `SESSION_OPTIONS` and `application_name = walrus`.
     pub fn tokio_config(&self) -> tokio_postgres::Config {
         let mut cfg = tokio_postgres::Config::new();
         cfg.host(&self.host)
@@ -91,8 +88,7 @@ impl PgParams {
         cfg
     }
 
-    /// Replication config for `slot`/`publication` with `SESSION_OPTIONS`, TLS disabled
-    /// (PLAN.md §1: TLS is out of scope), start LSN 0/0 (resume from the slot).
+    /// TLS is disabled (PLAN.md §1); start LSN 0/0 resumes from the slot.
     pub fn replication_config(&self, slot: &str, publication: &str) -> ReplicationConfig {
         ReplicationConfig::new(
             self.host.clone(),
@@ -108,7 +104,6 @@ impl PgParams {
     }
 }
 
-/// Connect a plain SQL client (spawns its connection task).
 pub async fn connect(params: &PgParams) -> Result<Client> {
     let (client, connection) = params
         .tokio_config()
@@ -128,9 +123,8 @@ pub async fn connect(params: &PgParams) -> Result<Client> {
     Ok(client)
 }
 
-/// §4.1 server checks: `wal_level = logical`; free `max_replication_slots`, `max_wal_senders`
-/// and `max_connections` headroom for `catchup_connections`; role has REPLICATION or is
-/// superuser. Errors are actionable ("set wal_level=logical and restart Postgres").
+/// PLAN.md §4.1 server checks (`wal_level`, slot/sender/connection headroom for
+/// `catchup_connections`, REPLICATION privilege). Errors say what to change.
 pub async fn check_server(client: &Client, catchup_connections: usize) -> Result<()> {
     let row = client
         .query_one(
@@ -188,13 +182,9 @@ pub async fn check_server(client: &Client, catchup_connections: usize) -> Result
     Ok(())
 }
 
-/// Read and check the configured tables' schemas from the catalog (§4.1, §4.7):
-/// - the table exists, has a primary key, and its replica identity is not NOTHING;
-/// - every key column's type (by `format_type` without typmod) is in `KEY_TYPES`, and text
-///   keys use a deterministic collation;
-/// - columns: `attnum > 0`, not dropped, not generated, in `attnum` order, with
-///   `format_type(atttypid, atttypmod)` and the type oid; `key` = indexes of the key columns,
-///   ascending (column order, see `TableSchema::key`).
+/// Read and validate the configured tables from the catalog (PLAN.md §4.1, §4.7): primary
+/// key present, replica identity not NOTHING, key types in `KEY_TYPES` (text keys need a
+/// deterministic collation). Columns are non-dropped, non-generated, in `attnum` order.
 pub async fn read_schemas(client: &Client, names: &[String]) -> Result<Vec<TableSchema>> {
     let mut tables = Vec::with_capacity(names.len());
     for name in names {
@@ -348,13 +338,8 @@ pub async fn slot_state(client: &Client, slot: &str) -> Result<SlotState> {
     })
 }
 
-/// Start a new epoch (PLAN.md §4.5, I10):
-/// 1. drop the slot if it exists; delete the store (`change_index::remove`);
-/// 2. create the publication `FOR TABLE <tables>`, or `ALTER PUBLICATION ... SET TABLE` it;
-/// 3. create the slot on a gated replication session:
-///    `CREATE_REPLICATION_SLOT <slot> LOGICAL pgoutput (SNAPSHOT 'nothing')` → consistent
-///    point C (log what blocks it from `pg_stat_activity` every few seconds while waiting);
-/// 4. `change_index::create(data_dir, random epoch, tables, C)`.
+/// Start a new epoch (PLAN.md §4.5, I10): reset the Postgres side, then create the store
+/// at the slot's consistent point.
 pub async fn new_epoch(
     params: &PgParams,
     client: &Client,
@@ -384,9 +369,8 @@ pub async fn new_epoch(
     Ok(store)
 }
 
-/// The Postgres half of `new_epoch` (steps 1–3, without touching the store): drop the slot if
-/// it exists, create or update the publication, create the slot. Returns the consistent point
-/// C as a raw LSN.
+/// The Postgres half of `new_epoch`, without touching the store. Returns the consistent
+/// point as a raw LSN.
 pub async fn create_publication_and_slot(
     params: &PgParams,
     client: &Client,

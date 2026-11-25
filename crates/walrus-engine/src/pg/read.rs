@@ -13,11 +13,10 @@ use crate::pg::setup::PgParams;
 use crate::pg::xid::Snapshot;
 use crate::schema::{Key, Row, TableSchema, quote_ident};
 
-/// Delta keys per COPY statement (PLAN.md §4.7). Constant, tuned by benchmark.
+/// Delta keys per COPY statement (PLAN.md §4.7), tuned by benchmark.
 pub const DELTA_BATCH: usize = 500;
 
-/// The catch-up pool: `size` connections with `SESSION_OPTIONS`. Its size is the
-/// admission-control limit (§3).
+/// `size` is the admission-control limit (PLAN.md §3).
 pub fn create_pool(params: &PgParams, size: usize) -> Result<Pool> {
     let manager = deadpool_postgres::Manager::from_config(
         params.tokio_config(),
@@ -43,7 +42,6 @@ pub async fn take_snapshot(tx: &Transaction<'_>) -> Result<Snapshot> {
     Snapshot::parse(row.get(0))
 }
 
-/// `COPY (SELECT <columns> FROM <table>) TO STDOUT`.
 pub fn full_query(table: &TableSchema) -> String {
     format!(
         "COPY (SELECT {} FROM {}) TO STDOUT",
@@ -52,13 +50,10 @@ pub fn full_query(table: &TableSchema) -> String {
     )
 }
 
-/// COPY of the rows with the given keys (non-empty), using the primary-key index:
-/// - single-column key: `... WHERE "id" = ANY(<literal>::<type>[])`;
-/// - composite key: `... WHERE ("a", "b") IN (SELECT * FROM unnest(<lit a>::<ta>[], <lit b>::<tb>[]))`.
-///
-/// `<type>` is the column's `type_name`; literals come from `pg::literal::array_literal`.
+/// COPY of the rows with the given (non-empty) keys, shaped to use the primary-key index:
+/// `= ANY(<literal>::<type>[])` for one key column, `(a, b) IN (SELECT * FROM unnest(...))`
+/// for composite keys.
 pub fn delta_query(table: &TableSchema, keys: &[Key]) -> String {
-    // Per key column: its quoted name and its `<literal>::<type>[]` array.
     let parts: Vec<(String, String)> = table
         .key
         .iter()

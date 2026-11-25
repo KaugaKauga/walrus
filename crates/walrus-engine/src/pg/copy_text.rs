@@ -11,9 +11,8 @@ use crate::schema::Row;
 
 pub struct CopyParser {
     ncols: usize,
-    /// Bytes of an incomplete trailing row (no `\n` seen yet). Always empty between rows.
+    /// Bytes of an incomplete trailing row (no `\n` seen yet).
     pending: Vec<u8>,
-    /// Rows completed so far, for error messages.
     rows_seen: u64,
 }
 
@@ -57,7 +56,7 @@ impl CopyParser {
         Ok(())
     }
 
-    /// End of data: errors if an incomplete row remains.
+    /// Errors if an incomplete row remains.
     pub fn finish(self) -> Result<()> {
         if !self.pending.is_empty() {
             bail!(

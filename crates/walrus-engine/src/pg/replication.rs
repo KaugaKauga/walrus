@@ -24,21 +24,14 @@ pub struct ReplicationCtx {
     /// End LSN of the last durably indexed transaction (I1); forwarded to
     /// `ReplicationClient::update_applied_lsn`.
     pub acks: watch::Receiver<u64>,
-    /// Set to true once START_REPLICATION is accepted.
+    /// True once START_REPLICATION is accepted.
     pub ready: watch::Sender<bool>,
     pub shutdown: watch::Receiver<bool>,
     pub metrics: Arc<Metrics>,
 }
 
-/// Stream until shutdown or error. Connects with `PgParams::replication_config` (START at 0/0:
-/// resume from the slot), then:
-/// - `Begin { final_lsn, xid }` → `WalEvent::Begin { xid, commit_lsn: final_lsn }`;
-/// - `XLogData { data }` → `Decoder::decode` → one `WalEvent::Change` per change;
-/// - `Commit { lsn, end_lsn }` → `WalEvent::Commit { commit_lsn: lsn, end_lsn }`;
-/// - `KeepAlive { wal_end }` → `metrics.server_wal_end`; `Message`s are ignored;
-/// - every change of `acks` → `update_applied_lsn(end_lsn)`.
-///
-/// On shutdown: stop the client and return Ok (dropping `events` lets the writer finish).
+/// Stream until shutdown or error. On shutdown the client is stopped and `Ok` returned;
+/// dropping `events` lets the writer finish. Logical `Message`s are ignored.
 pub async fn run(ctx: ReplicationCtx) -> Result<()> {
     let cfg = ctx.params.replication_config(&ctx.slot, &ctx.publication);
     // Local receivers, so waiting on them does not borrow `ctx` while `forward` uses it.
@@ -85,8 +78,7 @@ pub async fn run(ctx: ReplicationCtx) -> Result<()> {
     }
 }
 
-/// Turn one replication event into writer events. `false` if shutdown arrived while waiting
-/// for room in the writer queue.
+/// `false` if shutdown arrived while waiting for room in the writer queue.
 async fn forward(
     ctx: &ReplicationCtx,
     decoder: &mut Decoder,
@@ -133,7 +125,7 @@ async fn forward(
     }
 }
 
-/// Queue an event for the writer; waits when the queue is full (backpressure, §7.4).
+/// Waits when the queue is full (backpressure, PLAN.md §7.4).
 async fn send(ctx: &ReplicationCtx, event: WalEvent) -> Result<bool> {
     let mut shutdown = ctx.shutdown.clone();
     tokio::select! {
