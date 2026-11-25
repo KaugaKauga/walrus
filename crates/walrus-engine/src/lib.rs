@@ -22,12 +22,10 @@ use crate::config::Config;
 use crate::metrics::Metrics;
 use crate::pg::setup::{self, PgParams, SlotState};
 use crate::pg::{read, replication};
-use crate::session::Shared;
+use crate::session::{LIVE_RING, Shared};
 
 /// Replication → writer queue (events).
 const EVENT_QUEUE: usize = 4096;
-/// Live ring capacity (transactions); sessions further behind are closed (§7.3).
-const LIVE_RING: usize = 1024;
 
 /// A running engine.
 pub struct Engine {

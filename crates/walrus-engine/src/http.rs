@@ -1,7 +1,9 @@
 //! HTTP endpoints (PLAN.md §6.1, §7.5): `/v1/stream`, `/health`, `/ready`, `/metrics`.
 
+use std::future::IntoFuture;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -20,6 +22,9 @@ use walrus_protocol::Offset;
 use crate::metrics::Metrics;
 use crate::schema::TableSchema;
 use crate::session::{self, Request, Shared};
+
+/// How long shutdown waits for open connections to finish.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Serve until `shared.shutdown` becomes true.
 ///
@@ -50,13 +55,23 @@ pub async fn serve(listener: TcpListener, shared: Arc<Shared>) -> Result<()> {
             tracing::debug!(error = %e, "could not set TCP_NODELAY");
         }
     });
-    // Sessions also end on shutdown, so the open streams do not hold the server up.
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown.wait_for(|s| *s).await;
-        })
-        .await
-        .context("http server failed")
+    // Sessions end on shutdown, so their streams normally finish at once. A client that
+    // stopped reading can't take the frames still buffered for it, though, and graceful shutdown
+    // would wait for it forever: give connections SHUTDOWN_GRACE, then stop waiting.
+    let mut grace = shutdown.clone();
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let _ = shutdown.wait_for(|s| *s).await;
+    });
+    tokio::select! {
+        r = server.into_future() => r.context("http server failed"),
+        _ = async {
+            let _ = grace.wait_for(|s| *s).await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        } => {
+            tracing::warn!("connections still open after the shutdown grace period; not waiting");
+            Ok(())
+        }
+    }
 }
 
 #[derive(Deserialize)]

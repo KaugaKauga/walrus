@@ -89,15 +89,36 @@ impl TestDb {
 
     /// Start an engine on this database and wait until it streams.
     pub async fn start_engine(&self) -> Engine {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let mut engine = walrus_engine::start(self.config(), listener)
-            .await
-            .expect("engine start");
+        self.start_with(self.config()).await.expect("engine start")
+    }
+
+    /// Start an engine with `config` and wait until it streams.
+    pub async fn start_with(&self, config: Config) -> anyhow::Result<Engine> {
+        let mut engine = self.start_unready(config).await?;
         tokio::time::timeout(Duration::from_secs(30), engine.wait_ready())
             .await
-            .expect("engine ready in time")
-            .expect("engine ready");
-        engine
+            .expect("engine ready in time")?;
+        Ok(engine)
+    }
+
+    /// `walrus_engine::start` only: errors are startup errors, the stream may not be up yet.
+    pub async fn start_unready(&self, config: Config) -> anyhow::Result<Engine> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        walrus_engine::start(config, listener).await
+    }
+
+    /// Like `start_engine`, but retries while Postgres still considers the slot of a just
+    /// stopped engine active (a new epoch has to drop it).
+    pub async fn restart_engine(&self) -> Engine {
+        let mut last = None;
+        for _ in 0..50 {
+            match self.start_with(self.config()).await {
+                Ok(e) => return e,
+                Err(e) => last = Some(e),
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("engine would not restart: {:#}", last.expect("error"));
     }
 
     /// `SELECT *` of a fixture table as the client would hold it: rows by key.
@@ -302,6 +323,55 @@ fn describe_diff(
         }
     }
     format!("{table}: equal")
+}
+
+/// One transaction for the model test: one to four statements over any tables, mixing the
+/// `random_writes` statements with truncates, primary-key changes of every table, and large
+/// values (up to ~1 MB).
+pub fn model_txn(rng: &mut impl rand::Rng) -> String {
+    let mut sql = String::from("BEGIN;");
+    for _ in 0..rng.random_range(1..5) {
+        if rng.random_range(0..10) < 7 {
+            sql.push_str(&random_statement(rng));
+            continue;
+        }
+        let n: i64 = rng.random_range(1..80);
+        sql.push_str(&match rng.random_range(0..8) {
+            0 => ["TRUNCATE todos;", "TRUNCATE lists;", "TRUNCATE users;"][rng.random_range(0..3)]
+                .to_string(),
+            1 => format!(
+                "UPDATE lists SET id = id + 1000 WHERE id = {n} \
+                 AND NOT EXISTS (SELECT 1 FROM lists WHERE id = {n} + 1000);"
+            ),
+            2 => format!(
+                "UPDATE users SET id = md5('moved' || {n})::uuid WHERE email = 'user{n}@example.com' \
+                 AND NOT EXISTS (SELECT 1 FROM users WHERE id = md5('moved' || {n})::uuid);"
+            ),
+            3 => format!(
+                "UPDATE todos SET list_id = list_id + 100 WHERE position = {n} \
+                 AND NOT EXISTS (SELECT 1 FROM todos t WHERE t.list_id = todos.list_id + 100 \
+                                 AND t.position = {n});"
+            ),
+            4 => format!(
+                "UPDATE todos SET notes = repeat('huge {n} ', {}) WHERE position = {n};",
+                rng.random_range(1000..120_000)
+            ),
+            5 => format!(
+                "UPDATE users SET avatar = decode(repeat('ab', {}), 'hex') WHERE email = 'user{n}@example.com';",
+                rng.random_range(1..50_000)
+            ),
+            6 => format!(
+                "INSERT INTO todos (list_id, position, title, done, tags, notes) \
+                 SELECT {n} % 10 + 1, {n} + g, 'bulk', false, ARRAY['x', NULL], repeat('n', {}) \
+                 FROM generate_series(1, {}) g ON CONFLICT DO NOTHING;",
+                rng.random_range(0..3000),
+                rng.random_range(1..30)
+            ),
+            _ => format!("DELETE FROM todos WHERE position BETWEEN {n} AND {n} + 20;"),
+        });
+    }
+    sql.push_str("COMMIT;");
+    sql
 }
 
 /// Random single- and multi-table transactions over the fixture, from `seed`.

@@ -30,6 +30,10 @@ pub const CATCHUP_TIME_LIMIT: Duration = Duration::from_secs(300);
 pub const KEEPALIVE: Duration = Duration::from_secs(15);
 /// Frames buffered between a session and its HTTP response.
 pub const SOCKET_BUFFER: usize = 64;
+/// Live ring capacity (transactions); sessions further behind are closed (PLAN.md §7.3).
+pub const LIVE_RING: usize = 1024;
+/// How often a session blocked on a full socket buffer checks whether it fell behind the ring.
+const LAG_POLL: Duration = Duration::from_millis(100);
 
 /// Everything sessions share.
 pub struct Shared {
@@ -237,6 +241,36 @@ async fn send(out: &Out, bytes: Bytes) -> Result<(), ClientGone> {
     out.send(bytes).await.map_err(|_| ClientGone)
 }
 
+/// `send` for the live loop. While the client's socket is full this session is not receiving
+/// from the ring, so `Lagged` would never surface: poll the ring and close once the session is
+/// further behind than the ring holds (`closes_lagged`), instead of waiting on a client that
+/// may never read. Shutdown also ends the wait, so a stuck client can't hold shutdown up.
+async fn send_live(
+    shared: &Shared,
+    out: &Out,
+    rx: &broadcast::Receiver<Arc<EncodedTxn>>,
+    bytes: Bytes,
+) -> Result<(), Stop> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let send = out.send(bytes);
+    tokio::pin!(send);
+    let mut shutdown = shared.shutdown.clone();
+    loop {
+        tokio::select! {
+            r = &mut send => return r.map_err(|_| Stop::ClientGone),
+            _ = shutdown_requested(&mut shutdown) => return Err(Stop::Close("shutdown")),
+            _ = tokio::time::sleep(LAG_POLL) => {
+                if rx.len() > LIVE_RING {
+                    Metrics::inc(&shared.metrics.closes_lagged);
+                    return Err(Stop::Close("lagged while blocked on the socket"));
+                }
+            }
+        }
+    }
+}
+
 /// Resolves when shutdown is requested. A helper so the watch guard is never held across an
 /// await in a caller.
 async fn shutdown_requested(shutdown: &mut watch::Receiver<bool>) {
@@ -412,24 +446,25 @@ async fn run(shared: &Shared, request: &Request, out: &Out) -> Result<(), Stop> 
             JoinDecision::EndJoin => {
                 // Every later transaction began after S too, so none can be visible in it.
                 join = None;
-                send_whole(out, request, &txn).await?
+                send_whole(shared, out, request, &txn, &rx).await?
             }
-            JoinDecision::Send => send_whole(out, request, &txn).await?,
+            JoinDecision::Send => send_whole(shared, out, request, &txn, &rx).await?,
             JoinDecision::Skip => false,
             JoinDecision::Filtered(parts) => {
                 for part in parts {
                     match part {
                         TableOut::Whole(t) => {
                             if let Some(tt) = txn.table(t) {
-                                send(out, tt.frames.clone()).await?;
+                                send_live(shared, out, &rx, tt.frames.clone()).await?;
                             }
                         }
                         TableOut::Items(t, items) => {
-                            send(out, encode_items(&shared.tables[t], &items)).await?;
+                            send_live(shared, out, &rx, encode_items(&shared.tables[t], &items))
+                                .await?;
                         }
                     }
                 }
-                send(out, txn.commit_frame.clone()).await?;
+                send_live(shared, out, &rx, txn.commit_frame.clone()).await?;
                 true
             }
             JoinDecision::Close(reason) => {
@@ -445,7 +480,13 @@ async fn run(shared: &Shared, request: &Request, out: &Out) -> Result<(), Stop> 
 
 /// Send a transaction's frames for the subscribed tables it touched, then its commit frame.
 /// Returns whether anything was sent.
-async fn send_whole(out: &Out, request: &Request, txn: &EncodedTxn) -> Result<bool, ClientGone> {
+async fn send_whole(
+    shared: &Shared,
+    out: &Out,
+    request: &Request,
+    txn: &EncodedTxn,
+    rx: &broadcast::Receiver<Arc<EncodedTxn>>,
+) -> Result<bool, Stop> {
     let mut any = false;
     for t in txn
         .tables
@@ -453,10 +494,10 @@ async fn send_whole(out: &Out, request: &Request, txn: &EncodedTxn) -> Result<bo
         .filter(|t| request.tables.contains(&t.table))
     {
         any = true;
-        send(out, t.frames.clone()).await?;
+        send_live(shared, out, rx, t.frames.clone()).await?;
     }
     if any {
-        send(out, txn.commit_frame.clone()).await?;
+        send_live(shared, out, rx, txn.commit_frame.clone()).await?;
     }
     Ok(any)
 }
