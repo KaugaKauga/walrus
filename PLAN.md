@@ -19,6 +19,31 @@ This document is the plan for the first version:
 - how we prove it is correct and fast;
 - the order we build it in.
 
+## Status (2026-11-25)
+
+**MVP milestones M0–M6 are done.**
+
+- `scripts/check.sh` is green: fmt, clippy `-D warnings`, 146 unit and integration tests against
+  Postgres 17. The seeded model test is part of the suite.
+- The baseline is recorded in `bench/results/2026-11-25-df3dfbc.md`.
+
+| Scenario | Result | Target |
+|---|---|---|
+| Commit → client latency | p50 2.6 ms, p99 7.2 ms | p50 25 ms, p99 100 ms |
+| Sustained ingest | ≈ 22.5k changes/s | 10k changes/s |
+| Delta resume of 100 changed rows in a 100k-row table | 2.4 ms, 20 KiB | — |
+| Full catch-up of the same table | 84 ms, 20.7 MiB | — |
+
+Known follow-ups, smallest first:
+
+1. Measure replication lag against `pg_current_wal_lsn()`.
+2. Add the missing §9 histograms.
+3. Coalesce live commits for clients that are behind.
+4. Benchmark on Linux with real fsync.
+5. The two residual join risks in §14.
+
+Next: Phase 1b (§10.3).
+
 ---
 
 ## 1. What the MVP must prove
